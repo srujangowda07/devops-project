@@ -1,0 +1,31 @@
+# Git & GitHub metadata
+.git/
+.github/
+
+# Documentation and planning artifacts
+*.md
+PHASE1_*.md
+
+# Local Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Local Node dependencies and build outputs
+node_modules/
+dist/
+npm-debug.log*
+
+# Secrets and local environment files
+.env
+.env.*
+*.pem
+*.key
+
+# Terraform local state and cache
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars

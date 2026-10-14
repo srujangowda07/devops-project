@@ -1,0 +1,43 @@
+# Python & Virtual Environments (Mandatory per Grading Module M3)
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.pytest_cache/
+
+# Node & Frontend Build Outputs (Mandatory per Grading Module M3)
+node_modules/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment Variables & Secret Credentials (Mandatory per Grading Module M3 & M7)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Terraform State & Local Variable Files (Mandatory per Grading Module M7)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+.terraform.lock.hcl
+
+# Project Planning Documents (Local Reference Only)
+PHASE1_*.md
+
+# Operating System & IDE Artifacts
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
