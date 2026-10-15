@@ -3,6 +3,7 @@
 **Project Title:** CloudPulse: Multi-Cloud Infrastructure & Incident Management Platform  
 **Target Architecture:** Containerized Microservices, Automated CI/CD, Infrastructure as Code, Kubernetes & Observability  
 **Document Classification:** Engineering Delivery & Technical Architecture Report  
+**Companion Presentation:** [CloudPulse_Presentation.pptx](CloudPulse_Presentation.pptx)  
 
 ---
 

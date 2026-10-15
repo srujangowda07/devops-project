@@ -134,7 +134,8 @@ devops-project/
 │   ├── prometheus/             # Prometheus scrape configuration
 │   └── grafana/                # Datasource and dashboard definitions
 ├── screenshots/                # Verification evidence gallery (24 terminal/browser artifacts)
-├── docs/                       # Technical systems documentation
+├── docs/                       # Technical systems documentation & deliverables
+│   ├── CloudPulse_Presentation.pptx # Executive capstone presentation slide deck
 │   └── PROJECT_REPORT.md       # Comprehensive technical engineering report
 ├── docker-compose.yml          # Three-tier local orchestration stack
 ├── .env.example                # Example environment variables template
@@ -570,8 +571,9 @@ All live AWS infrastructure provisioned during testing has been **cleanly destro
 
 ---
 
-# PART L — DETAILED TECHNICAL REPORT
+# PART L — PROJECT DELIVERABLES & DOCUMENTATION
 
-For the comprehensive systems architecture report, database schema diagrams, detailed test breakdowns, and verified terminal evidence artifacts, see:
+For the complete technical breakdown, database schemas, verified terminal evidence, and executive slide deck:
 
-📄 **[Detailed Technical Project Report](docs/PROJECT_REPORT.md)**
+- 📄 **[Detailed Technical Project Report](docs/PROJECT_REPORT.md)** — Architectural designs, schema models, CI/CD specifications, and complete verification gallery.
+- 📊 **[Executive Presentation Slide Deck](docs/CloudPulse_Presentation.pptx)** — Capstone presentation slides summarizing project architecture, engineering lifecycle, and operational outcomes.
