@@ -1,7 +1,5 @@
 # CloudPulse — Cloud Infrastructure & Incident Management Platform
 
-> **Status:** Phase 6 Configured & Validated — Terraform Infrastructure as Code for AWS VPC, Multi-AZ Public Subnets, and Amazon EKS Cluster with Managed Node Group implemented, formatted, and validated.
-
 ---
 
 ## 1. Project Overview & Problem Statement
@@ -228,42 +226,37 @@ The CI/CD pipeline acts as an automated quality gate, configuration validator, v
 ```text
 [ Git Push / Pull Request to main ]
                  |
-                 +-----------------------------------+-----------------------------------+-----------------------------------+-----------------------------------+
-                 |                                   |                                   |                                   |                                   |
-                 v                                   v                                   v                                   v                                   v
-      [ Stage 1: Backend Tests ]          [ Stage 2: Frontend Build ]      [ Stage 3: Terraform Validation ]   [ Stage 4: Helm & K8s Validation ]  [ Stage 5: Monitoring Validation ]
-      - Python 3.12 (Pinned)              - Node.js 22 (Pinned)            - Terraform CLI v1.9.8              - Helm v3.16.4 & Kubectl v1.31.0    - Python 3.12 & PyYAML
-      - Isolated SQLite test DB           - npm ci (lockfile reproducible) - terraform fmt -check -recursive  - helm lint helm/cloudpulse         - Scrape target: backend:8000
-      - Pytest (14 unit/API tests)        - Vite Production Build          - terraform init -backend=false     - Client dry-run kubectl validation - Scrape path: /metrics
-                                                                           - terraform validate (no creds)     - Kubeconform strict schema check   - Datasource URL check
-                                                                                                               - Architectural resource assertions - Dashboard JSON validation
-                 |                                   |                                                                       |                                   |
-                 +-----------------+-----------------+                                                                       |                                   |
-                                   |                                                                                         |                                   |
-                                   v (Needs Stages 1 & 2)                                                                    |                                   |
-                      [ Stage 6: Docker Build ]                                                                              |                                   |
-                      - Build Backend & Frontend via Buildx                                                                  |                                   |
-                      - Local layer caching (gha)                                                                            |                                   |
-                      - Tag with git commit SHA (${{ github.sha }})                                                          |                                   |
-                      - Export image tars & upload artifact                                                                  |                                   |
-                                   |                                                                                         |                                   |
-                                   v (Needs Stage 6)                                                                         |                                   |
-                   [ Stage 7: Trivy Security Scan ]                                                                          |                                   |
-                   - Download & load image archives                                                                          |                                   |
-                   - Scan OS & application dependencies                                                                      |                                   |
-                   - Gate: exit-code 1 on HIGH or CRITICAL                                                                    |                                   |
-                   - Generate & upload SARIF vulnerability reports                                                           |                                   |
-                                   |                                                                                         |                                   |
-                 +-----------------+-----------------------------------+-----------------------------------------------------+-----------------------------------+
+                 v
+      [ Stage 1: Backend Tests ]
+      - Python 3.12 (Pinned) | Isolated SQLite DB | Pytest (14 tests)
                  |
-                 v (Gated on ALL 7 previous stages passing + Push to main branch only)
-     [ Stage 8: Publish Images to GHCR ]
-     - Dedicated job with isolated `packages: write` permissions
-     - Downloads verified image artifacts (zero rebuild drift)
-     - Authenticates to GHCR via GitHub-provided GITHUB_TOKEN
-     - Publishes immutable tags: ghcr.io/<repo>-backend:${{ github.sha }}
-     - Publishes immutable tags: ghcr.io/<repo>-frontend:${{ github.sha }}
-     - Strictly skips floating `latest` tags
+                 v (needs: [backend-tests])
+      [ Stage 2: Frontend Build ]
+      - Node.js 22 (Pinned) | npm ci (lockfile reproducible) | Vite Production Build
+                 |
+                 v (needs: [frontend-build])
+      [ Stage 3: Terraform Validation ]
+      - Terraform CLI v1.9.8 | fmt -check | init -backend=false | validate (no AWS credentials)
+                 |
+                 v (needs: [terraform-validation])
+      [ Stage 4: Helm & K8s Validation ]
+      - Helm v3.16.4 & Kubectl v1.31.0 | helm lint | dry-run --validate=false | kubeconform schema checks
+                 |
+                 v (needs: [helm-k8s-validation])
+      [ Stage 5: Monitoring Configuration Validation ]
+      - Python 3.12 & PyYAML | Scrape target backend:8000 (/metrics) | Datasource URL | Dashboard JSON
+                 |
+                 v (needs: [monitoring-validation])
+      [ Stage 6: Docker Build ]
+      - Build Backend & Frontend via Buildx | Tag with commit SHA | Export image tars as workflow artifact
+                 |
+                 v (needs: [docker-build])
+      [ Stage 7: Trivy Security Scan ]
+      - Load image archives | Scan OS & library CVEs | Exit code 1 on HIGH/CRITICAL | Upload SARIF reports
+                 |
+                 v (needs: [trivy-security-scan] + Push to main branch only)
+      [ Stage 8: Publish Images to GHCR ]
+      - Isolated packages: write permission | Load verified image tars | Authenticate to GHCR | Push SHA tags
 ```
 
 ### Triggers & Concurrency Controls
