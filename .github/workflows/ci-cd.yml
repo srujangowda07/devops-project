@@ -111,7 +111,7 @@ jobs:
 
       # DevSecOps: Scan backend image for OS and library vulnerabilities
       - name: Scan Backend image with Trivy (Security Gate)
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_BACKEND }}:${{ github.sha }}
           format: 'table'
@@ -122,7 +122,7 @@ jobs:
 
       # DevSecOps: Scan frontend image for OS and library vulnerabilities
       - name: Scan Frontend image with Trivy (Security Gate)
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_FRONTEND }}:${{ github.sha }}
           format: 'table'
@@ -134,7 +134,7 @@ jobs:
       # Generate machine-readable SARIF reports
       - name: Generate Backend SARIF vulnerability report
         if: always()
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_BACKEND }}:${{ github.sha }}
           format: 'sarif'
@@ -143,7 +143,7 @@ jobs:
 
       - name: Generate Frontend SARIF vulnerability report
         if: always()
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_FRONTEND }}:${{ github.sha }}
           format: 'sarif'
