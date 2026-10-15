@@ -1,6 +1,6 @@
 # CloudPulse — Cloud Infrastructure & Incident Management Platform
 
-> **Status:** Phase 3 Complete — Docker containerization with multi-stage builds, non-root execution, automated Alembic migrations, unprivileged Nginx reverse proxy, and Docker Compose orchestration verified end-to-end.
+> **Status:** Phase 4 Complete — GitHub Actions CI/CD pipeline implemented with isolated backend Pytest testing, reproducible frontend Vite verification, Docker Buildx caching, and GHCR container publishing on main branch pushes.
 
 ---
 
@@ -20,6 +20,7 @@ Modern engineering teams manage increasingly distributed cloud workloads across 
 - **Production REST API:** High-performance FastAPI backend with structured CRUD endpoints, `/health` liveness probe, `/ready` database readiness probe, and Prometheus `/metrics` exposition.
 - **Responsive Web Dashboard:** React + Vite single-page application with operational KPI cards, filterable inventory table, interactive registration/edit modals, and incident drawers.
 - **Containerized Architecture:** Production multi-stage Docker builds running as non-root users (`appuser` UID 10001, `nginx` UID 101), orchestrated via Docker Compose.
+- **Automated CI/CD Quality Gate:** GitHub Actions workflow executing backend tests, frontend builds, and publishing versioned, immutable Docker images to GHCR.
 - **Automated Quality Gate:** Pytest test suite covering health, readiness, CRUD operations, relationship integrity, and input validation.
 
 ---
@@ -36,6 +37,8 @@ Modern engineering teams manage increasingly distributed cloud workloads across 
 | **Frontend UI** | React 18 & Vite | Responsive dashboard with plain CSS |
 | **Reverse Proxy** | Nginx Unprivileged (Alpine) | SPA static hosting & reverse proxy routing `/api/` |
 | **Container Engine** | Docker & Docker Compose | Multi-container orchestration, networking, and volumes |
+| **CI/CD Pipeline** | GitHub Actions | Automated lint, test, build, and container registry publishing |
+| **Container Registry**| GitHub Packages (GHCR) | Secure OCI container image distribution with SHA tags |
 
 ---
 
@@ -210,7 +213,77 @@ npm run dev
 
 ---
 
-## 7. Troubleshooting Guidance
+## 7. Automated CI/CD Pipeline (GitHub Actions & GHCR)
+
+CloudPulse includes a production-grade continuous integration and continuous delivery workflow implemented via GitHub Actions ([.github/workflows/ci-cd.yml](file:///.github/workflows/ci-cd.yml)).
+
+### Purpose & Architecture
+The CI/CD pipeline acts as an automated quality gate and container publishing engine. It ensures that every code change is validated for functional correctness and builds cleanly before container images are generated and published to GitHub Container Registry (GHCR).
+
+```text
+[ Git Push / Pull Request ]
+             |
+             +-----------------------+
+             |                       |
+             v                       v
+    [ Job 1: backend-tests ]  [ Job 2: frontend-verification ]
+    - Python 3.12 (Pinned)    - Node.js 22 (Pinned)
+    - Pinned requirements     - npm ci (Reproducible)
+    - Pytest (14 tests)       - Vite Production Build
+             |                       |
+             +-----------+-----------+
+                         |
+                 (Both must pass)
+                         |
+                         v
+            [ Job 3: build-and-publish ]
+            - Multi-stage Docker Buildx
+            - Cache via GitHub Actions (type=gha)
+            - Push only on main branch pushes
+            - Publish to GHCR with full commit SHA tag
+```
+
+### Triggers & Concurrency Controls
+- **Push Events:** Triggers on all pushes to the `main` branch.
+- **Pull Request Events:** Triggers on all pull requests targeting the `main` branch.
+- **Concurrency Protection:** Automatically cancels in-progress runs for previous commits on the same pull request branch while allowing `main` branch deployment runs to complete safely.
+
+### Quality Gate Jobs
+1. **`backend-tests` (Job 1):**
+   - Sets up Python 3.12 with pip dependency caching.
+   - Installs pinned dependencies from `backend/requirements.txt`.
+   - Runs the isolated Pytest suite against an in-memory SQLite database, guaranteeing zero side effects on production data.
+2. **`frontend-verification` (Job 2):**
+   - Sets up Node.js 22 with npm dependency caching.
+   - Executes `npm ci` for lockfile-reproducible dependency installation.
+   - Executes `npm run build` to compile the Vite + React single-page application and verify zero syntax/bundling errors.
+3. **`build-and-publish` (Job 3):**
+   - Depends explicitly on both `backend-tests` and `frontend-verification`. If either fails, publishing is immediately aborted.
+   - Builds both `backend` and `frontend` Docker images using Docker Buildx and GitHub Actions layer caching (`type=gha`).
+   - Uses minimal token permissions (`contents: read`, `packages: write`).
+
+### Image Registry & Immutable Tagging (GHCR)
+Published container images are pushed to GitHub Container Registry under:
+- **Backend Image:** `ghcr.io/<repository-owner>/<repository-name>-backend:<full-commit-sha>`
+- **Frontend Image:** `ghcr.io/<repository-owner>/<repository-name>-frontend:<full-commit-sha>`
+
+> [!NOTE]
+> **Immutable SHA Tagging:** Images are strictly tagged with the full 40-character Git commit SHA (`${{ github.sha }}`) to guarantee immutability, traceability, and zero-drift rollbacks. The pipeline deliberately does not publish or rely on floating `latest` tags.
+>
+> **Pull Request Security:** When the workflow executes for pull requests, Docker images are built to validate compilation and Dockerfile syntax, but image push is **disabled** (`push: false`). Images are pushed to GHCR exclusively on verified merges and pushes to `main`.
+
+### Inspecting Workflow Runs & Diagnosing Failures
+1. Navigate to the **Actions** tab in your GitHub repository.
+2. Select the **CloudPulse CI/CD** workflow from the left sidebar to view recent runs.
+3. Click on a specific run to inspect the status of `Backend Tests (Pytest)`, `Frontend Build & Verification`, and `Build & Publish Docker Images (GHCR)`.
+4. If a job fails, click on the job to expand step logs:
+   - For backend test failures: Check the `Run Pytest test suite` step output for failed assertion tracebacks.
+   - For frontend build errors: Check the `Build frontend production bundle` step output for Vite/Rollup syntax or dependency errors.
+   - For image publishing errors: Ensure `GITHUB_TOKEN` has read and write packages permissions in repository settings (**Settings > Actions > General > Workflow permissions**).
+
+---
+
+## 8. Troubleshooting Guidance
 
 1. **Docker Compose: Port 3000 or 8000 already in use:**
    - Check if another service (or local Vite / Uvicorn instance) is running on the port:
