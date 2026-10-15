@@ -223,86 +223,169 @@ npm run dev
 CloudPulse includes a production-grade continuous integration, continuous delivery, and DevSecOps security scanning workflow implemented via GitHub Actions ([.github/workflows/ci-cd.yml](file:///.github/workflows/ci-cd.yml)).
 
 ### Purpose & Architecture
-The CI/CD pipeline acts as an automated quality gate, vulnerability scanner, and container publishing engine. It ensures that every code change is validated for functional correctness, builds cleanly, and passes automated security scanning before container images are generated and published to GitHub Container Registry (GHCR).
+The CI/CD pipeline acts as an automated quality gate, configuration validator, vulnerability scanner, and container publishing engine. The workflow graph features **8 distinct, visible stages** with explicit dependency gating, ensuring that code correctness, infrastructure validity, Helm template rendering, monitoring configuration integrity, container builds, and security scans are verified independently and transparently before container images are published to GitHub Container Registry (GHCR).
 
 ```text
-[ Git Push / Pull Request ]
-             |
-             +-----------------------+
-             |                       |
-             v                       v
-    [ Job 1: backend-tests ]  [ Job 2: frontend-verification ]
-    - Python 3.12 (Pinned)    - Node.js 22 (Pinned)
-    - Pinned requirements     - npm ci (Reproducible)
-    - Pytest (14 tests)       - Vite Production Build
-             |                       |
-             +-----------+-----------+
-                         |
-                 (Both must pass)
-                         |
-                         v
-          [ Job 3: build-scan-publish ]
-          ├── 1. Build Backend & Frontend Docker images locally
-          ├── 2. Scan Backend image with Trivy (exit-code 1 on HIGH/CRITICAL)
-          ├── 3. Scan Frontend image with Trivy (exit-code 1 on HIGH/CRITICAL)
-          ├── 4. Generate & Upload SARIF scan report artifacts
-          └── 5. Publish to GHCR with full commit SHA tag (main push only)
+[ Git Push / Pull Request to main ]
+                 |
+                 +-----------------------------------+-----------------------------------+-----------------------------------+-----------------------------------+
+                 |                                   |                                   |                                   |                                   |
+                 v                                   v                                   v                                   v                                   v
+      [ Stage 1: Backend Tests ]          [ Stage 2: Frontend Build ]      [ Stage 3: Terraform Validation ]   [ Stage 4: Helm & K8s Validation ]  [ Stage 5: Monitoring Validation ]
+      - Python 3.12 (Pinned)              - Node.js 22 (Pinned)            - Terraform CLI v1.9.8              - Helm v3.16.4 & Kubectl v1.31.0    - Python 3.12 & PyYAML
+      - Isolated SQLite test DB           - npm ci (lockfile reproducible) - terraform fmt -check -recursive  - helm lint helm/cloudpulse         - Scrape target: backend:8000
+      - Pytest (14 unit/API tests)        - Vite Production Build          - terraform init -backend=false     - Client dry-run kubectl validation - Scrape path: /metrics
+                                                                           - terraform validate (no creds)     - Kubeconform strict schema check   - Datasource URL check
+                                                                                                               - Architectural resource assertions - Dashboard JSON validation
+                 |                                   |                                                                       |                                   |
+                 +-----------------+-----------------+                                                                       |                                   |
+                                   |                                                                                         |                                   |
+                                   v (Needs Stages 1 & 2)                                                                    |                                   |
+                      [ Stage 6: Docker Build ]                                                                              |                                   |
+                      - Build Backend & Frontend via Buildx                                                                  |                                   |
+                      - Local layer caching (gha)                                                                            |                                   |
+                      - Tag with git commit SHA (${{ github.sha }})                                                          |                                   |
+                      - Export image tars & upload artifact                                                                  |                                   |
+                                   |                                                                                         |                                   |
+                                   v (Needs Stage 6)                                                                         |                                   |
+                   [ Stage 7: Trivy Security Scan ]                                                                          |                                   |
+                   - Download & load image archives                                                                          |                                   |
+                   - Scan OS & application dependencies                                                                      |                                   |
+                   - Gate: exit-code 1 on HIGH or CRITICAL                                                                    |                                   |
+                   - Generate & upload SARIF vulnerability reports                                                           |                                   |
+                                   |                                                                                         |                                   |
+                 +-----------------+-----------------------------------+-----------------------------------------------------+-----------------------------------+
+                 |
+                 v (Gated on ALL 7 previous stages passing + Push to main branch only)
+     [ Stage 8: Publish Images to GHCR ]
+     - Dedicated job with isolated `packages: write` permissions
+     - Downloads verified image artifacts (zero rebuild drift)
+     - Authenticates to GHCR via GitHub-provided GITHUB_TOKEN
+     - Publishes immutable tags: ghcr.io/<repo>-backend:${{ github.sha }}
+     - Publishes immutable tags: ghcr.io/<repo>-frontend:${{ github.sha }}
+     - Strictly skips floating `latest` tags
 ```
 
 ### Triggers & Concurrency Controls
 - **Push Events:** Triggers on all pushes to the `main` branch.
 - **Pull Request Events:** Triggers on all pull requests targeting the `main` branch.
-- **Concurrency Protection:** Automatically cancels in-progress runs for previous commits on the same pull request branch while allowing `main` branch deployment runs to complete safely.
+- **Concurrency Protection:** Automatically cancels in-progress runs for previous commits on the same pull request branch (`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`) while allowing `main` branch publishing runs to complete safely.
+- **Least-Privilege Permissions:** Global workflow permission is strictly `contents: read`. Write permissions (`packages: write`) are isolated exclusively to the dedicated publishing job.
 
-### Quality Gate Jobs
-1. **`backend-tests` (Job 1):**
+### The 8 Pipeline Stages & What Each Checks
+
+1. **`backend-tests` (Backend Tests):**
    - Sets up Python 3.12 with pip dependency caching.
    - Installs pinned dependencies from `backend/requirements.txt`.
-   - Runs the isolated Pytest suite against an in-memory SQLite database, guaranteeing zero side effects on production data.
-2. **`frontend-verification` (Job 2):**
+   - Runs the complete Pytest suite (`pytest -v`) in an isolated SQLite memory database, ensuring zero local database side effects.
+   - Fails if any test assertion fails.
+
+2. **`frontend-build` (Frontend Build):**
    - Sets up Node.js 22 with npm dependency caching.
-   - Executes `npm ci` for lockfile-reproducible dependency installation.
-   - Executes `npm run build` to compile the Vite + React single-page application and verify zero syntax/bundling errors.
-3. **`build-scan-publish` (Job 3):**
-   - Depends explicitly on both `backend-tests` and `frontend-verification`. If either fails, Docker builds are not executed.
-   - Builds both `backend` and `frontend` Docker images using Docker Buildx and GitHub Actions layer caching (`type=gha`), loading them into the runner's local Docker daemon.
-   - **Trivy Container Security Gate:** Scans both `backend` and `frontend` images before any publishing occurs.
-   - Uses minimal token permissions (`contents: read`, `packages: write`).
+   - Executes `npm ci` using the committed lockfile for reproducible installs.
+   - Runs `npm run build` to compile the Vite + React production bundle and verify zero syntax or bundling errors.
 
-### DevSecOps: Trivy Container Vulnerability Scanning
-To enforce a shift-left security posture, container images are scanned using Aqua Security's official Trivy scanner (`aquasecurity/trivy-action@0.30.0`):
-- **Images Scanned:** Both `cloudpulse-backend` (`python:3.12-slim`) and `cloudpulse-frontend` (`nginxinc/nginx-unprivileged:alpine`).
-- **Scan Targets:** Operating system packages (Debian/Alpine base layers) and application libraries (Python pip packages, Node.js npm dependencies).
-- **Severity Threshold:** Configured strictly to `HIGH,CRITICAL` with `exit-code: 1`. If any actionable HIGH or CRITICAL CVEs are detected, Trivy immediately fails the pipeline, preventing vulnerable images from reaching GHCR.
-- **Report Artifacts:** Machine-readable SARIF vulnerability reports (`trivy-backend-report.sarif` and `trivy-frontend-report.sarif`) are uploaded as GitHub Actions artifacts (`trivy-security-reports`) retained for 7 days.
-- **Trivy Log Output:** Full human-readable tables detailing CVE IDs, severity levels, installed package versions, and fixed versions are displayed directly in the GitHub Actions runner console for immediate inspection.
+3. **`terraform-validation` (Terraform Validation):**
+   - Sets up Terraform v1.9.8.
+   - Checks recursive code formatting via `terraform fmt -check -recursive`.
+   - Initializes modules and AWS provider plugins in credential-free mode via `terraform init -backend=false`.
+   - Executes static schema validation via `terraform validate`.
+   - **Safety Boundary:** Does not require AWS credentials and does not run `terraform plan`, `apply`, or `destroy`.
 
-### Investigating & Resolving Vulnerabilities
-When a Trivy scan fails:
-1. Open the failed GitHub Actions run and expand the `Scan Backend image with Trivy (Security Gate)` or `Scan Frontend image with Trivy (Security Gate)` step.
-2. Identify the affected package name, current version, fixed version, and CVE reference.
-3. For base image CVEs: Upgrade the base image tag in the corresponding `Dockerfile` (e.g. newer Debian slim or Alpine release).
-4. For application dependencies: Bump the vulnerable library version in `backend/requirements.txt` or `frontend/package.json` (`npm update`), re-test locally (`pytest`, `npm run build`), and push the fix.
+4. **`helm-k8s-validation` (Helm & Kubernetes Validation):**
+   - Sets up Helm v3.16.4, Kubectl v1.31.0, and installs Kubeconform v0.6.7.
+   - Executes `helm lint helm/cloudpulse` to detect syntax or chart packaging issues.
+   - Renders templates to `/tmp/rendered-cloudpulse.yaml` with default values.
+   - Performs client-side schema validation on `k8s/namespace.yaml` and the rendered template via `kubectl apply --dry-run=client -f`.
+   - Runs strict schema validation against Kubernetes OpenAPI schemas via `kubeconform -strict -summary`.
+   - Runs automated Python assertions validating key architectural requirements: 2 replicas each for frontend and backend Deployments, ClusterIP Services, Ingress routing (`/` to frontend, `/api` to backend), PostgreSQL resources, migration Job, and configurable image tag overrides (`--set backend.image.tag=...`).
 
-### Image Registry & Immutable Tagging (GHCR)
-Published container images are pushed to GitHub Container Registry under:
-- **Backend Image:** `ghcr.io/<repository-owner>/<repository-name>-backend:<full-commit-sha>`
-- **Frontend Image:** `ghcr.io/<repository-owner>/<repository-name>-frontend:<full-commit-sha>`
+5. **`monitoring-validation` (Monitoring Configuration Validation):**
+   - Validates `monitoring/prometheus/prometheus.yml` syntax, confirms scrape target `cloudpulse-backend:8000`, and metrics path `/metrics`.
+   - Validates `monitoring/grafana/datasources/datasources.yaml` and confirms Prometheus URL `http://cloudpulse-prometheus:9090`.
+   - Parses `monitoring/grafana/dashboards/cloudpulse-overview.json` and the chart's embedded copy, verifying dashboard title and panel definitions.
+   - Validates that Helm-rendered Prometheus and Grafana Deployments mount their corresponding ConfigMaps.
 
-> [!NOTE]
-> **Immutable SHA Tagging:** Images are strictly tagged with the full 40-character Git commit SHA (`${{ github.sha }}`) to guarantee immutability, traceability, and zero-drift rollbacks. The pipeline deliberately does not publish or rely on floating `latest` tags.
->
-> **Pull Request Security:** When the workflow executes for pull requests, Docker images are built and scanned with Trivy to validate security gates, but image push is **disabled** (`push: false`). Images are pushed to GHCR exclusively on verified merges and pushes to `main`.
+6. **`docker-build` (Docker Build):**
+   - Depends on: `needs: [backend-tests, frontend-build]`.
+   - Builds both `backend` and `frontend` images using Docker Buildx and GitHub Actions layer cache (`type=gha`).
+   - Tags local images with immutable commit SHA: `${{ env.IMAGE_BACKEND }}:${{ github.sha }}`.
+   - Saves both images as tar archives (`docker save`) and uploads them as workflow artifact `docker-images` (`retention-days: 1`), preserving exact image identity for downstream scan and publish stages.
 
-### Inspecting Workflow Runs & Diagnosing Failures
-1. Navigate to the **Actions** tab in your GitHub repository.
-2. Select the **CloudPulse CI/CD** workflow from the left sidebar to view recent runs.
-3. Click on a specific run to inspect the status of `Backend Tests (Pytest)`, `Frontend Build & Verification`, and `Build, Scan & Publish Images`.
-4. If a job fails, click on the job to expand step logs:
-   - For backend test failures: Check the `Run Pytest test suite` step output for failed assertion tracebacks.
-   - For frontend build errors: Check the `Build frontend production bundle` step output for Vite/Rollup syntax or dependency errors.
-   - For security scan failures: Check the `Scan Backend image with Trivy` or `Scan Frontend image with Trivy` step for detected CVE tables.
-   - For image publishing errors: Ensure `GITHUB_TOKEN` has read and write packages permissions in repository settings (**Settings > Actions > General > Workflow permissions**).
+7. **`trivy-security-scan` (Trivy Security Scan):**
+   - Depends on: `needs: [docker-build]`.
+   - Downloads `docker-images` artifact and loads exact built images into the Docker daemon (`docker load`).
+   - Scans both images using `aquasecurity/trivy-action@v0.36.0` for OS and application vulnerabilities (`vuln-type: 'os,library'`).
+   - **Security Gate:** Configured with `severity: 'HIGH,CRITICAL'` and `exit-code: '1'`. Fails immediately if any unfixed HIGH or CRITICAL vulnerability is found (`ignore-unfixed: true` is preserved to focus on actionable fixes).
+   - Generates machine-readable SARIF reports (`trivy-backend-report.sarif`, `trivy-frontend-report.sarif`) and uploads them as artifact `trivy-security-reports` (`retention-days: 7`) with `if: always()`, ensuring reports are preserved even upon security gate failure.
+
+8. **`publish-ghcr` (Publish Images to GHCR):**
+   - Depends on: `needs: [backend-tests, frontend-build, terraform-validation, helm-k8s-validation, monitoring-validation, docker-build, trivy-security-scan]`.
+   - Execution Condition: `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`.
+   - Permissions: Strictly isolated `packages: write` (and `contents: read`).
+   - Downloads verified `docker-images` artifact and loads them into daemon.
+   - Authenticates to GHCR via `docker/login-action@v3` using `secrets.GITHUB_TOKEN`.
+   - Pushes `${{ env.IMAGE_BACKEND }}:${{ github.sha }}` and `${{ env.IMAGE_FRONTEND }}:${{ github.sha }}`.
+   - Never publishes floating `latest` tags.
+   - Pull requests cannot trigger image publishing.
+
+### DevSecOps: Trivy Security Scan Reports in GitHub Actions
+1. Navigate to the **Actions** tab in your GitHub repository and select the **CloudPulse CI/CD** workflow.
+2. Select a completed workflow run.
+3. In the summary page, scroll to the **Artifacts** section to download `trivy-security-reports` containing the full SARIF report files.
+4. Click on the **Trivy Security Scan** job in the workflow graph to view human-readable tables detailing CVE IDs, affected packages, severity ratings, and fixed versions directly in the step console logs.
+
+### Distinction Between CI Validation & Live Deployment
+> [!IMPORTANT]
+> **Static CI Validation vs. Live Deployment:**
+> - The CI workflow performs **complete, reproducible, credential-free validation** of the application code, Dockerfiles, Terraform syntax, Helm charts, Kubernetes resource schemas, and monitoring configurations.
+> - **CI does NOT deploy to AWS or modify Kubernetes clusters.** No `terraform apply`, `kubectl apply` (live), or `helm upgrade` commands run in GitHub Actions.
+> - Running live AWS infrastructure provisioning requires configured AWS IAM credentials, explicit review of `terraform plan`, and cost approval.
+> - Running live Kubernetes workloads requires an authenticated `kubeconfig`, a live EKS cluster, and an installed Ingress controller (e.g. `ingress-nginx`).
+> - Local and CI validation proves that all manifests and configs are structurally and syntactically correct; live service health and metrics scraping can only be confirmed once deployed to an active cluster.
+
+### Local CLI Commands for Pipeline Validation
+All 8 CI/CD checks can be validated locally without AWS credentials or a live cluster:
+
+```powershell
+# 1. Backend Pytest Suite
+cd backend
+pytest -v
+cd ..
+
+# 2. Frontend Production Build
+cd frontend
+npm ci
+npm run build
+cd ..
+
+# 3. Terraform Formatting, Init & Validate
+cd terraform
+terraform fmt -check -recursive
+terraform init -backend=false
+terraform validate
+cd ..
+
+# 4. Helm Lint & Kubectl Schema Dry-Run Validation
+helm lint helm/cloudpulse
+helm template cloudpulse helm/cloudpulse --namespace cloudpulse | kubectl apply --dry-run=client -f -
+kubectl apply --dry-run=client -f k8s/namespace.yaml
+
+# 5. Monitoring Configuration Validation (Python)
+python -c "
+import yaml, json
+with open('monitoring/prometheus/prometheus.yml') as f: prom = yaml.safe_load(f)
+assert prom['scrape_configs'][0]['targets'] == ['cloudpulse-backend:8000']
+with open('monitoring/grafana/datasources/datasources.yaml') as f: ds = yaml.safe_load(f)
+assert ds['datasources'][0]['url'] == 'http://cloudpulse-prometheus:9090'
+with open('monitoring/grafana/dashboards/cloudpulse-overview.json') as f: json.load(f)
+print('Monitoring configuration syntax and endpoints verified!')
+"
+
+# 6. Docker Build & Tagging
+docker build -t ghcr.io/srujangowda07/devops-project-backend:local-test ./backend
+docker build -t ghcr.io/srujangowda07/devops-project-frontend:local-test ./frontend
+```
 
 ---
 
@@ -644,7 +727,187 @@ kubectl port-forward svc/cloudpulse-grafana 3000:3000 -n cloudpulse
 
 ---
 
-## 11. Troubleshooting Guidance
+## 11. Practical Demonstration Runbook
+
+Follow this step-by-step runbook to deliver an end-to-end presentation and evaluation of CloudPulse.
+
+### Step 1: Start the Local Stack with Docker Compose
+Launch the complete containerized application stack:
+```powershell
+docker compose up -d --build
+docker compose ps
+```
+* **Expected Observation:**
+  * `db` (`postgres:16-alpine`) starts and becomes healthy.
+  * `migrate` executes `alembic upgrade head` to completion and exits with code 0.
+  * `backend` starts Uvicorn on port 8000 and reports healthy.
+  * `frontend` starts Nginx on port 8080 (mapped to host port `3000`).
+
+### Step 2: Demonstrate Browser UI & Real CRUD Operations
+1. Open your browser at **`http://localhost:3000`**.
+2. Verify the dashboard header displays **API: Connected** and **Database: Ready**.
+3. **Create:** Click **Register Resource**, input `prod-eks-cluster`, provider `AWS`, region `ap-south-1`, type `Managed Kubernetes`, status `running`, and monthly cost `94.76`. Click **Save Resource**.
+4. **Read & Filter:** Verify the resource appears in the dashboard grid. Filter by provider `AWS` or status `running`.
+5. **Update:** Click the edit icon on `prod-eks-cluster`, change status to `degraded`, and save.
+6. **Incident Log:** Click **Log Incident**, select `prod-eks-cluster`, title `High API server latency`, severity `high`, status `investigating`. Save and observe the linked incident.
+7. **Delete:** Delete the resource to demonstrate cascade deletion of linked incidents and real-time cost metric re-calculation.
+
+### Step 3: Inspect Backend Health & Telemetry Endpoints
+Verify process liveness and database readiness from the terminal:
+```powershell
+# 1. Process Liveness probe
+curl http://localhost:8000/health
+# Expected: {"status":"healthy"}
+
+# 2. Database Connectivity Readiness probe
+curl http://localhost:8000/ready
+# Expected: {"status":"ready","database":"connected"}
+
+# 3. Prometheus Raw Metrics Stream
+curl http://localhost:8000/metrics
+# Expected: Standard Prometheus exposition format containing http_requests_total, python_info, etc.
+```
+
+### Step 4: Run the Automated Pytest Suite
+Execute backend tests in isolated memory mode:
+```powershell
+cd backend
+.\.venv\Scripts\pytest.exe -v
+cd ..
+```
+* **Expected Observation:** All 14 tests pass in <1 second (`tests/test_api.py::test_metrics_endpoint PASSED`). Zero side effects on PostgreSQL data.
+
+### Step 5: Verify Service Status & Data Persistence
+Demonstrate that stopping the stack preserves all database records:
+```powershell
+docker compose ps
+docker compose down
+# Re-start without rebuild:
+docker compose up -d
+```
+* **Expected Observation:** Refresh `http://localhost:3000` — all created resources and incident records remain intact due to the named volume `cloudpulse_postgres_data`.
+
+### Step 6: Explain CI/CD Pipeline & Immutable GHCR Tagging
+1. Open [.github/workflows/ci-cd.yml](file:///.github/workflows/ci-cd.yml).
+2. Point out the 8 visible stages and quality gates:
+   * `backend-tests`: Pinned Python 3.12 with complete pytest suite.
+   * `frontend-build`: Pinned Node.js 22 with `npm ci` and Vite production build.
+   * `terraform-validation`: Pinned Terraform v1.9.8 running `fmt`, `init -backend=false`, and `validate`.
+   * `helm-k8s-validation`: Helm chart linting, client dry-run, kubeconform schema validation, and architectural assertions.
+   * `monitoring-validation`: Prometheus scrape targets, Grafana datasource URL, and dashboard JSON validation.
+   * `docker-build`: Multi-stage Docker builds tagged with commit SHA and exported as workflow artifacts.
+   * `trivy-security-scan`: Scans backend and frontend image artifacts for HIGH/CRITICAL vulnerabilities.
+   * `publish-ghcr`: Dedicated job publishing immutable commit SHA tags to GHCR (main branch pushes only).
+3. Highlight immutable tagging: Container images are strictly tagged with `${{ github.sha }}` (`ghcr.io/srujangowda07/devops-project-backend:<sha>`) rather than floating `latest`.
+
+### Step 7: Demonstrate DevSecOps Trivy Scanning
+1. Explain the shift-left security gate in CI/CD:
+   * Action: `aquasecurity/trivy-action@v0.36.0`
+   * Scans both `backend` (`python:3.12-slim`) and `frontend` (`nginx-unprivileged:alpine`) images.
+   * Policy: `severity: HIGH,CRITICAL` with `exit-code: 1`. Fails pipeline on actionable vulnerabilities.
+   * Generates and uploads SARIF report artifacts (`trivy-security-reports`).
+
+### Step 8: Demonstrate Terraform IaC & Safety Gates
+Show declarative AWS infrastructure without provisioning:
+```powershell
+cd terraform
+terraform fmt -check -recursive
+terraform validate
+cd ..
+```
+* **Expected Observation:** `Success! The configuration is valid.`
+* **Key Architecture Points to Highlight:**
+  * Dedicated VPC (`10.0.0.0/16`) with 2 public subnets in distinct AZs (`ap-south-1a`, `ap-south-1b`).
+  * Kubernetes control plane v1.36 (Standard Support tier, avoiding $0.50/hr extended support surcharge).
+  * Conservative node sizing (`t3.small`, desired 1, max 2).
+  * Zero NAT Gateway architecture (saves ~$32.40+/month).
+  * Safety Gate: Reiterate that `terraform apply` was **not** run to prevent billable AWS charges.
+
+### Step 9: Render & Validate Helm Chart Manifests
+Demonstrate Kubernetes manifest generation and client dry-run validation:
+```powershell
+# 1. Lint the Helm chart
+helm lint helm/cloudpulse
+
+# 2. Validate standalone namespace
+kubectl apply --dry-run=client -f k8s/namespace.yaml
+
+# 3. Dry-run validate all 15 rendered Kubernetes manifests
+helm template cloudpulse helm/cloudpulse --namespace cloudpulse | kubectl apply --dry-run=client -f -
+```
+* **Expected Observation:** Zero linting errors; all 15 Kubernetes resources (Secret, ConfigMaps, Services, Deployments, Ingress, Migration Job) pass client-side schema validation.
+
+### Step 10: Explain Observability Architecture
+1. **Scraping:** Prometheus scrapes `cloudpulse-backend:8000/metrics` every 15s via internal CoreDNS.
+2. **Dashboard:** Grafana automatically provisions [monitoring/grafana/dashboards/cloudpulse-overview.json](file:///c:/Users/kssru/OneDrive/Documents/DevOps/DEVOPS-PROJECT/devops-project/monitoring/grafana/dashboards/cloudpulse-overview.json) featuring 8 panels (Health, Total Requests, 5xx Error Rate, Python Info, Throughput by Handler, Latency Percentiles, Status Codes, GC Activity).
+3. **Security:** Internal `ClusterIP` Services for Prometheus (port 9090) and Grafana (port 3000) with zero public ingress exposure.
+4. **Distinction:** Local validation proves manifest syntax, scrape configs, and PromQL queries are mathematically grounded in the actual metrics emitted by FastAPI; live metric population requires an active cluster deployment.
+
+### Step 11: Summary & Future Deployment Prerequisites
+Conclude by reviewing prerequisites for live AWS deployment:
+* Provision VPC & EKS cluster: `terraform apply` (requires configured AWS credentials).
+* Deploy Ingress Controller: `ingress-nginx` or AWS Load Balancer Controller.
+* Enable Persistent Volumes: AWS EBS CSI Driver add-on for persistent PostgreSQL storage.
+* Deploy Application: `helm upgrade --install cloudpulse ./helm/cloudpulse --namespace cloudpulse`.
+
+---
+
+## 12. Rubric Audit & Submission Evidence Checklist
+
+This checklist maps each milestone from the assignment rubric to the current project implementation and outlines the exact evidence to capture for grading submission.
+
+### Milestone Audit Summary
+| Milestone | Topic | Points | Verification Status | Implementation Grounding |
+| :--- | :--- | :---: | :--- | :--- |
+| **M1** | Application (Frontend, Backend, DB) | 10 | **Complete & Verified** | FastAPI (`/health`, 8+ REST endpoints), PostgreSQL + Alembic migration, React Vite frontend. |
+| **M2** | Automated Testing | 10 | **Complete & Verified** | 14 Pytest unit tests in `tests/test_api.py` using in-memory SQLite isolation. |
+| **M3** | Git & Repository Governance | 5 | **Complete & Verified** | Clean `.gitignore`, zero committed credentials, 11+ structured git commits. |
+| **M4** | Docker & Compose Containerization | 10 | **Complete & Verified** | Non-root backend (`10001`) & frontend (`101`), multi-stage frontend build, verified Compose stack. |
+| **M5** | CI/CD Pipeline (GitHub Actions) | 15 | **Complete & Configured** | Pinned workflow runs Pytest, frontend build, Docker build, and GHCR publish with commit SHA tags. |
+| **M6** | DevSecOps (Trivy Security Scan) | 5 | **Complete & Configured** | Scans backend and frontend images for `HIGH,CRITICAL` CVEs with SARIF artifact upload. |
+| **M7** | Terraform AWS IaC | 15 | **Complete & Validated** | Multi-AZ VPC, EKS cluster (k8s 1.36), managed node group, validated locally (`terraform validate`). |
+| **M8** | Kubernetes & Helm Deployment | 15 | **Complete & Validated** | `k8s/namespace.yaml`, Helm chart with 2 replicas each, ClusterIP Services, Ingress, migration Job. |
+| **M9** | Observability (Prometheus & Grafana) | 10 | **Complete & Validated** | FastAPI `/metrics`, Prometheus scrape config, provisioned 8-panel Grafana dashboard. |
+| **M10** | Documentation & Presentation | 5 | **Complete & Verified** | Comprehensive `README.md`, 11-step demo runbook, evidence capture checklist. |
+| **Total** | | **100** | | |
+
+---
+
+### Student Submission Evidence Checklist
+
+Capture the following evidence files and screenshots for your capstone submission:
+
+#### Locally Verifiable Evidence (Capture Now)
+* [ ] **Local Application Running:** Screenshot of browser at `http://localhost:3000` showing the CloudPulse dashboard with active cloud resources.
+* [ ] **Resource CRUD Demonstration:** Screenshot showing creation, editing, or incident logging in the CloudPulse UI.
+* [ ] **Backend Health Check:** Terminal screenshot of `curl http://localhost:8000/health` and `curl http://localhost:8000/ready`.
+* [ ] **Pytest Test Suite:** Terminal screenshot of `.\.venv\Scripts\pytest.exe -v` showing all 14 tests passing.
+* [ ] **Docker Compose Services:** Terminal screenshot of `docker compose ps` showing `db`, `backend`, and `frontend` healthy/running.
+* [ ] **Git Commit History:** Terminal screenshot of `git log --oneline -n 12` demonstrating meaningful, structured commits.
+* [ ] **Terraform Validation:** Terminal screenshot of `terraform fmt -check -recursive` and `terraform validate` passing cleanly in `terraform/`.
+* [ ] **Helm Lint & Dry-Run:** Terminal screenshot of `helm lint helm/cloudpulse` and `helm template ... | kubectl apply --dry-run=client -f -` validating all 15 Kubernetes manifests.
+* [ ] **Prometheus Metrics Stream:** Terminal screenshot of `curl http://localhost:8000/metrics` displaying `http_requests_total` and `python_info`.
+
+#### Remote Pipeline Evidence (Capture from GitHub / GHCR)
+* [ ] **GitHub Actions Workflow:** Screenshot of the GitHub repository **Actions** tab showing a green passing run of **CloudPulse CI/CD**.
+* [ ] **Trivy Vulnerability Scan Output:** Screenshot of the `Scan Backend image with Trivy` step log from the GitHub Actions run.
+* [ ] **Published GHCR Packages:** Screenshot of GitHub Container Registry showing published `devops-project-backend` and `devops-project-frontend` images tagged with the 40-character Git commit SHA.
+
+#### Live Cloud & Cluster Evidence (Capture Only if Live Infrastructure is Provisioned)
+> [!NOTE]
+> The following items require an active AWS account, live Terraform provisioning (`terraform apply`), and live Helm deployment. They cannot be captured prior to live deployment.
+* [ ] **AWS Console VPC & EKS:** Screenshot of AWS Management Console showing the `cloudpulse-vpc` and `cloudpulse-eks` cluster in `ap-south-1`.
+* [ ] **Terraform Execution Plan:** Screenshot of `terraform plan -out=tfplan` output showing planned AWS resource creation.
+* [ ] **Kubernetes Pods & Services:** Screenshot of `kubectl get pods -n cloudpulse` and `kubectl get svc -n cloudpulse` showing 2 backend replicas, 2 frontend replicas, postgresql, prometheus, and grafana in `Running` state.
+* [ ] **Helm Release:** Screenshot of `helm list -n cloudpulse` showing status `deployed`.
+* [ ] **Ingress Routing:** Screenshot of browser accessing CloudPulse through the external Ingress hostname / LoadBalancer address.
+* [ ] **Live Prometheus Targets:** Screenshot of `http://localhost:9090/targets` (via `kubectl port-forward`) showing `cloudpulse-backend` in state `UP`.
+* [ ] **Populated Grafana Dashboard:** Screenshot of `http://localhost:3000` (via `kubectl port-forward`) showing live telemetry panels populated with Prometheus metrics.
+* [ ] **Infrastructure Teardown:** Screenshot of `terraform destroy` completion confirming all AWS resources have been cleanly destroyed to prevent recurring charges.
+
+---
+
+## 13. Troubleshooting Guidance
 
 1. **Docker Compose: Port 3000 or 8000 already in use:**
    - Check if another service (or local Vite / Uvicorn instance) is running on the port:

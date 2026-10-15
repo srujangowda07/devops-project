@@ -21,11 +21,19 @@ env:
   REGISTRY: ghcr.io
   PYTHON_VERSION: '3.12'
   NODE_VERSION: '22'
+  TERRAFORM_VERSION: '1.9.8'
+  HELM_VERSION: 'v3.16.4'
+  KUBECTL_VERSION: 'v1.31.0'
+  KUBECONFORM_VERSION: 'v0.6.7'
 
 jobs:
+  # ===========================================================================
+  # 1. Backend Tests (Pytest)
+  # ===========================================================================
   backend-tests:
-    name: Backend Tests (Pytest)
+    name: Backend Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -47,9 +55,13 @@ jobs:
         working-directory: backend
         run: pytest -v
 
-  frontend-verification:
-    name: Frontend Build & Verification
+  # ===========================================================================
+  # 2. Frontend Build
+  # ===========================================================================
+  frontend-build:
+    name: Frontend Build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -69,13 +81,220 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-  build-scan-publish:
-    name: Build, Scan & Publish Images
-    needs: [backend-tests, frontend-verification]
+  # ===========================================================================
+  # 3. Terraform Validation (Credential-free static validation)
+  # ===========================================================================
+  terraform-validation:
+    name: Terraform Validation
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform ${{ env.TERRAFORM_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Check Terraform formatting
+        working-directory: terraform
+        run: terraform fmt -check -recursive
+
+      - name: Initialize Terraform (Credential-free)
+        working-directory: terraform
+        run: terraform init -backend=false
+
+      - name: Validate Terraform configuration
+        working-directory: terraform
+        run: terraform validate
+
+  # ===========================================================================
+  # 4. Helm & Kubernetes Validation (Offline linting, rendering & schema checks)
+  # ===========================================================================
+  helm-k8s-validation:
+    name: Helm & Kubernetes Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install PyYAML
+        run: python -m pip install pyyaml
+
+      - name: Set up Helm ${{ env.HELM_VERSION }}
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Set up Kubectl ${{ env.KUBECTL_VERSION }}
+        uses: azure/setup-kubectl@v4
+        with:
+          version: ${{ env.KUBECTL_VERSION }}
+
+      - name: Install Kubeconform ${{ env.KUBECONFORM_VERSION }}
+        run: |
+          curl -sL https://github.com/yannh/kubeconform/releases/download/${{ env.KUBECONFORM_VERSION }}/kubeconform-linux-amd64.tar.gz | sudo tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: Lint Helm Chart
+        run: helm lint helm/cloudpulse
+
+      - name: Render Helm Template to Manifest
+        run: helm template cloudpulse helm/cloudpulse > /tmp/rendered-cloudpulse.yaml
+
+      - name: Validate Standalone Namespace Manifest (Kubectl Client Dry-Run)
+        run: kubectl apply --dry-run=client -f k8s/namespace.yaml
+
+      - name: Validate Rendered Manifests (Kubectl Client Dry-Run)
+        run: kubectl apply --dry-run=client -f /tmp/rendered-cloudpulse.yaml
+
+      - name: Schema Validation with Kubeconform
+        run: |
+          kubeconform -strict -summary k8s/namespace.yaml
+          kubeconform -strict -summary /tmp/rendered-cloudpulse.yaml
+
+      - name: Verify Architecture & Resource Assertions
+        run: |
+          python -c "
+          import subprocess, yaml
+
+          # Verify default rendering
+          out = subprocess.check_output(['helm', 'template', 'cloudpulse', 'helm/cloudpulse'], text=True)
+          docs = [d for d in yaml.safe_load_all(out) if d]
+
+          deployments = {d['metadata']['name']: d for d in docs if d['kind'] == 'Deployment'}
+          assert 'cloudpulse-backend' in deployments, 'backend deployment missing'
+          assert 'cloudpulse-frontend' in deployments, 'frontend deployment missing'
+          assert deployments['cloudpulse-backend']['spec']['replicas'] == 2, 'backend replicas != 2'
+          assert deployments['cloudpulse-frontend']['spec']['replicas'] == 2, 'frontend replicas != 2'
+
+          services = {d['metadata']['name']: d for d in docs if d['kind'] == 'Service'}
+          for s in ['cloudpulse-backend', 'cloudpulse-frontend', 'cloudpulse-postgresql', 'cloudpulse-prometheus', 'cloudpulse-grafana']:
+              assert s in services, f'service {s} missing'
+              assert services[s]['spec']['type'] == 'ClusterIP', f'{s} is not ClusterIP'
+
+          ingresses = [d for d in docs if d['kind'] == 'Ingress']
+          assert len(ingresses) >= 1, 'ingress missing'
+          rules = ingresses[0]['spec']['rules'][0]['http']['paths']
+          paths = {p['path']: p['backend']['service']['name'] for p in rules}
+          assert paths.get('/') == 'cloudpulse-frontend', 'frontend ingress path missing'
+          assert paths.get('/api') == 'cloudpulse-backend', 'backend ingress path missing'
+
+          jobs = [d for d in docs if d['kind'] == 'Job']
+          assert any(j['metadata']['name'] == 'cloudpulse-migration' for j in jobs), 'migration job missing'
+
+          # Verify configurable image tags
+          override_out = subprocess.check_output([
+              'helm', 'template', 'cloudpulse', 'helm/cloudpulse',
+              '--set', 'backend.image.tag=ci-test-backend',
+              '--set', 'frontend.image.tag=ci-test-frontend'
+          ], text=True)
+          override_docs = [d for d in yaml.safe_load_all(override_out) if d]
+          override_deps = {d['metadata']['name']: d for d in override_docs if d['kind'] == 'Deployment'}
+          b_img = override_deps['cloudpulse-backend']['spec']['template']['spec']['containers'][0]['image']
+          f_img = override_deps['cloudpulse-frontend']['spec']['template']['spec']['containers'][0]['image']
+          assert b_img.endswith(':ci-test-backend'), f'Backend tag override failed: {b_img}'
+          assert f_img.endswith(':ci-test-frontend'), f'Frontend tag override failed: {f_img}'
+
+          print('Helm architectural and configuration assertions verified successfully.')
+          "
+
+  # ===========================================================================
+  # 5. Monitoring Configuration Validation
+  # ===========================================================================
+  monitoring-validation:
+    name: Monitoring Configuration Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install PyYAML
+        run: python -m pip install pyyaml
+
+      - name: Set up Helm ${{ env.HELM_VERSION }}
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Validate Monitoring Configurations and Bindings
+        run: |
+          python -c "
+          import json, subprocess, yaml
+
+          # 1. Prometheus Scrape Configuration
+          with open('monitoring/prometheus/prometheus.yml') as f:
+              prom = yaml.safe_load(f)
+          assert 'scrape_configs' in prom, 'Prometheus config missing scrape_configs'
+          backend_jobs = [j for j in prom['scrape_configs'] if j.get('job_name') == 'cloudpulse-backend']
+          assert len(backend_jobs) == 1, 'cloudpulse-backend scrape job missing'
+          job = backend_jobs[0]
+          assert job.get('metrics_path') == '/metrics', f'metrics_path is {job.get(\"metrics_path\")} expected /metrics'
+          targets = job['static_configs'][0]['targets']
+          assert 'cloudpulse-backend:8000' in targets, f'target cloudpulse-backend:8000 missing in {targets}'
+          print('Prometheus scrape configuration verified.')
+
+          # 2. Grafana Datasource Configuration
+          with open('monitoring/grafana/datasources/datasources.yaml') as f:
+              ds = yaml.safe_load(f)
+          datasources = ds.get('datasources', [])
+          prom_ds = [d for d in datasources if d.get('type') == 'prometheus']
+          assert len(prom_ds) >= 1, 'Prometheus datasource definition missing'
+          assert prom_ds[0].get('url') == 'http://cloudpulse-prometheus:9090', f'url mismatch: {prom_ds[0].get(\"url\")}'
+          print('Grafana datasource configuration verified.')
+
+          # 3. Grafana Dashboard JSON Files
+          with open('monitoring/grafana/dashboards/cloudpulse-overview.json') as f:
+              dash = json.load(f)
+          assert dash.get('title') == 'CloudPulse Application Observability', f'Unexpected dashboard title: {dash.get(\"title\")}'
+          assert len(dash.get('panels', [])) > 0, 'Dashboard contains no panels'
+
+          with open('helm/cloudpulse/dashboards/cloudpulse-overview.json') as f:
+              helm_dash = json.load(f)
+          assert helm_dash.get('title') == 'CloudPulse Application Observability'
+          assert len(helm_dash.get('panels', [])) > 0, 'Helm dashboard contains no panels'
+          print('Grafana dashboard JSON files verified.')
+
+          # 4. Helm Monitoring Resources and Mount Agreement
+          out = subprocess.check_output(['helm', 'template', 'cloudpulse', 'helm/cloudpulse'], text=True)
+          docs = [d for d in yaml.safe_load_all(out) if d]
+          configs = {d['metadata']['name']: d for d in docs if d['kind'] == 'ConfigMap'}
+          assert 'cloudpulse-prometheus-config' in configs, 'Prometheus ConfigMap missing in Helm chart'
+          assert 'cloudpulse-grafana-config' in configs, 'Grafana ConfigMap missing in Helm chart'
+
+          prom_dep = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'cloudpulse-prometheus')
+          graf_dep = next(d for d in docs if d['kind'] == 'Deployment' and d['metadata']['name'] == 'cloudpulse-grafana')
+
+          prom_vols = prom_dep['spec']['template']['spec']['volumes']
+          assert any(v.get('configMap', {}).get('name') == 'cloudpulse-prometheus-config' for v in prom_vols), 'Prometheus deployment does not mount cloudpulse-prometheus-config'
+
+          graf_vols = graf_dep['spec']['template']['spec']['volumes']
+          assert any(v.get('configMap', {}).get('name') == 'cloudpulse-grafana-config' for v in graf_vols), 'Grafana deployment does not mount cloudpulse-grafana-config'
+
+          print('Helm monitoring resources and ConfigMap volume bindings verified successfully.')
+          "
+
+  # ===========================================================================
+  # 6. Docker Build (Builds images, tags with commit SHA, exports artifacts)
+  # ===========================================================================
+  docker-build:
+    name: Docker Build
+    needs: [backend-tests, frontend-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -88,7 +307,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Build images and load into local Docker daemon for scanning
       - name: Build Backend image locally
         uses: docker/build-push-action@v5
         with:
@@ -108,6 +326,47 @@ jobs:
           tags: ${{ env.IMAGE_FRONTEND }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Save Docker images to tar archives
+        run: |
+          mkdir -p /tmp/docker-images
+          docker save ${{ env.IMAGE_BACKEND }}:${{ github.sha }} -o /tmp/docker-images/backend-image.tar
+          docker save ${{ env.IMAGE_FRONTEND }}:${{ github.sha }} -o /tmp/docker-images/frontend-image.tar
+
+      - name: Upload Docker image archives for scanning and publishing
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-images
+          path: /tmp/docker-images/*.tar
+          retention-days: 1
+
+  # ===========================================================================
+  # 7. Trivy Security Scan (Scans built images, fails on HIGH/CRITICAL)
+  # ===========================================================================
+  trivy-security-scan:
+    name: Trivy Security Scan
+    needs: [docker-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set lowercase repository image names
+        run: |
+          echo "IMAGE_BACKEND=ghcr.io/${GITHUB_REPOSITORY,,}-backend" >> $GITHUB_ENV
+          echo "IMAGE_FRONTEND=ghcr.io/${GITHUB_REPOSITORY,,}-frontend" >> $GITHUB_ENV
+
+      - name: Download Docker image archives
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images
+          path: /tmp/docker-images
+
+      - name: Load Docker images into daemon
+        run: |
+          docker load -i /tmp/docker-images/backend-image.tar
+          docker load -i /tmp/docker-images/frontend-image.tar
 
       # DevSecOps: Scan backend image for OS and library vulnerabilities
       - name: Scan Backend image with Trivy (Security Gate)
@@ -161,20 +420,51 @@ jobs:
             trivy-frontend-report.sarif
           retention-days: 7
 
-      # Authenticate to GHCR only on main branch pushes
+  # ===========================================================================
+  # 8. Publish Images to GHCR (Dedicated job, pushes ONLY after all checks pass)
+  # ===========================================================================
+  publish-ghcr:
+    name: Publish Images to GHCR
+    needs:
+      - backend-tests
+      - frontend-build
+      - terraform-validation
+      - helm-k8s-validation
+      - monitoring-validation
+      - docker-build
+      - trivy-security-scan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Set lowercase repository image names
+        run: |
+          echo "IMAGE_BACKEND=ghcr.io/${GITHUB_REPOSITORY,,}-backend" >> $GITHUB_ENV
+          echo "IMAGE_FRONTEND=ghcr.io/${GITHUB_REPOSITORY,,}-frontend" >> $GITHUB_ENV
+
+      - name: Download Docker image archives
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images
+          path: /tmp/docker-images
+
+      - name: Load verified Docker images into daemon
+        run: |
+          docker load -i /tmp/docker-images/backend-image.tar
+          docker load -i /tmp/docker-images/frontend-image.tar
+
       - name: Log in to GitHub Container Registry
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Publish images to GHCR only after all checks and security scans pass
       - name: Publish Backend image to GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: docker push ${{ env.IMAGE_BACKEND }}:${{ github.sha }}
 
       - name: Publish Frontend image to GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: docker push ${{ env.IMAGE_FRONTEND }}:${{ github.sha }}
