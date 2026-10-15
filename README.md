@@ -1,6 +1,6 @@
 # CloudPulse — Cloud Infrastructure & Incident Management Platform
 
-> **Status:** Phase 5 Complete — Trivy container security scanning integrated into GitHub Actions CI/CD pipeline with automated security gates (HIGH/CRITICAL severity thresholds) and SARIF report artifacts.
+> **Status:** Phase 6 Configured & Validated — Terraform Infrastructure as Code for AWS VPC, Multi-AZ Public Subnets, and Amazon EKS Cluster with Managed Node Group implemented, formatted, and validated.
 
 ---
 
@@ -22,6 +22,7 @@ Modern engineering teams manage increasingly distributed cloud workloads across 
 - **Containerized Architecture:** Production multi-stage Docker builds running as non-root users (`appuser` UID 10001, `nginx` UID 101), orchestrated via Docker Compose.
 - **Automated CI/CD Quality Gate:** GitHub Actions workflow executing backend tests, frontend builds, and publishing versioned, immutable Docker images to GHCR.
 - **DevSecOps Vulnerability Gate:** Automated Trivy container vulnerability scanning blocking images with HIGH or CRITICAL findings.
+- **Infrastructure as Code (IaC):** Modular, reproducible Terraform configuration for AWS VPC networking and Amazon EKS Kubernetes cluster provisioning.
 - **Automated Quality Gate:** Pytest test suite covering health, readiness, CRUD operations, relationship integrity, and input validation.
 
 ---
@@ -41,6 +42,8 @@ Modern engineering teams manage increasingly distributed cloud workloads across 
 | **CI/CD Pipeline** | GitHub Actions | Automated lint, test, build, and container registry publishing |
 | **Security Scanning** | Aqua Security Trivy | Container image vulnerability scanner (OS & app dependencies) |
 | **Container Registry**| GitHub Packages (GHCR) | Secure OCI container image distribution with SHA tags |
+| **Infrastructure as Code** | Terraform (HashiCorp v1.16+) | Declarative AWS networking and EKS resource provisioning |
+| **Cloud Provider** | Amazon Web Services (AWS) | VPC, Subnets, Internet Gateway, EKS Cluster, and EC2 nodes |
 
 ---
 
@@ -303,7 +306,150 @@ Published container images are pushed to GitHub Container Registry under:
 
 ---
 
-## 8. Troubleshooting Guidance
+## 8. Infrastructure as Code (Terraform & Amazon EKS)
+
+CloudPulse defines its cloud infrastructure declaratively using HashiCorp Terraform located in the `terraform/` directory.
+
+### Directory Structure
+```text
+terraform/
+├── versions.tf               # Terraform CLI (>= 1.5.0) and AWS provider (~> 5.0) constraints
+├── providers.tf              # AWS provider configuration with default tags
+├── variables.tf              # Configurable parameters (region, CIDRs, node sizing, k8s version)
+├── network.tf                # VPC, Internet Gateway, 2 public subnets, route tables & EKS tags
+├── eks.tf                    # IAM roles/policies, EKS cluster, and managed worker node group
+├── outputs.tf                # Cluster name, endpoint, VPC/subnet IDs, and kubectl config command
+└── terraform.tfvars.example  # Sample configuration values (tracked in git; no secrets)
+```
+
+### AWS Resources Configured
+1. **Virtual Private Cloud (VPC):** Dedicated `10.0.0.0/16` network with DNS hostnames and DNS support enabled.
+2. **Internet Gateway (IGW):** Direct Internet routing for public subnets (avoids costly NAT Gateways).
+3. **Public Subnets:** Two non-overlapping subnets across distinct Availability Zones (`ap-south-1a`: `10.0.1.0/24`, `ap-south-1b`: `10.0.2.0/24`) tagged with `kubernetes.io/role/elb = "1"` and `kubernetes.io/cluster/cloudpulse-eks = "shared"`.
+4. **Route Table & Associations:** Default route `0.0.0.0/0` targeting the Internet Gateway attached to both subnets.
+5. **IAM Security Roles:**
+   - EKS Cluster Role: Attached with `AmazonEKSClusterPolicy`.
+   - Worker Node Role: Attached with `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`.
+6. **Amazon EKS Control Plane:** Kubernetes `1.32` cluster with public and private endpoint access enabled.
+7. **EKS Managed Node Group:** Sized conservatively with `t3.small` EC2 instances (`desired = 1`, `min = 1`, `max = 2`) running Amazon Linux 2023 / EKS optimized AMI.
+
+### Prerequisites & AWS Authentication
+Before running Terraform, ensure the AWS CLI and Terraform CLI are installed locally:
+- **Terraform:** v1.5.0+ installed (`terraform version`).
+- **AWS CLI:** v2.x installed (`aws --version`).
+
+Authenticate using your AWS credentials:
+```bash
+# Option 1: Standard interactive configuration
+aws configure
+
+# Option 2: Environment variables
+$env:AWS_ACCESS_KEY_ID="your-access-key-id"
+$env:AWS_SECRET_ACCESS_KEY="your-secret-access-key"
+$env:AWS_DEFAULT_REGION="ap-south-1"
+
+# Verify authentication:
+aws sts get-caller-identity
+```
+
+### Formatting, Initialization, Validation & Planning
+Execute commands from within the `terraform/` directory:
+
+```powershell
+cd terraform
+
+# 1. Format verification
+terraform fmt -check -recursive
+
+# 2. Provider initialization (local state, no backend needed)
+terraform init -backend=false
+
+# 3. Syntax and schema validation
+terraform validate
+
+# 4. Generate speculative execution plan (requires AWS credentials)
+terraform plan -out=tfplan
+```
+
+### Safe Plan Review & Provisioning Gate
+Review the generated plan output carefully to inspect all resources to be added, changed, or destroyed:
+```powershell
+terraform show tfplan
+```
+
+> [!WARNING]
+> **Strict Provisioning Gate:** Do NOT run `terraform apply` without explicit review and approval. Running `terraform apply` provisions live AWS resources that incur billable hourly charges.
+
+When approved to provision:
+```powershell
+terraform apply tfplan
+```
+
+### Configuring `kubectl` Access
+Once provisioning completes, configure your local Kubernetes CLI using the output command:
+```bash
+aws eks update-kubeconfig --region ap-south-1 --name cloudpulse-eks
+
+# Verify cluster connectivity
+kubectl get nodes -o wide
+```
+
+### Infrastructure Teardown & Cost Cleanup
+When evaluation is complete, tear down all provisioned resources cleanly:
+
+```powershell
+terraform destroy
+```
+
+> [!CAUTION]
+> Ensure all active workloads in the cluster are deleted before destroying to prevent orphaned Load Balancers or EBS volumes.
+
+### Cost Considerations & Architecture Optimizations
+
+> [!NOTE]
+> **Pricing Disclaimer:** All figures listed below are rough estimates based on AWS standard list prices for region `ap-south-1` (Asia Pacific - Mumbai) at the time of writing. Actual costs will vary based on exact hourly usage, network egress transfer volumes, and potential AWS pricing or exchange rate updates.
+
+#### 1. EKS Control Plane Support Tiers
+AWS applies tiered pricing for Amazon EKS control planes depending on the Kubernetes version lifecycle:
+- **Standard Support Tier (~$0.10/hour, estimated ~$73.00/month):**
+  Applies to active Kubernetes versions during their first 14 months of general availability on Amazon EKS. CloudPulse is configured by default to use **Kubernetes `1.32`**, which falls within the active standard support window (standard support active through 2026/2027), incurring only the baseline rate.
+- **Extended Support Tier (~$0.60/hour, estimated ~$438.00/month):**
+  Applies when running Kubernetes versions in months 15 through 26 (after standard support ends). AWS assesses an additional $0.50/hour surcharge on top of the base $0.10/hour rate (a 6x price increase).
+  *Cost Risk Warning:* If older Kubernetes versions (such as 1.28, 1.29, 1.30, or 1.31 once it passes its standard support lifecycle) are deployed or kept running past their standard support window, the control plane charges surge dramatically from ~$73/month to ~$438/month.
+
+#### 2. Worker Node Compute & Networking
+- **EC2 Worker Instances:**
+  Configured with `t3.small` instances (2 vCPUs, 2 GiB RAM) at ~$0.023/hour per node in `ap-south-1`.
+  - Baseline (1 running node): Estimated **~$16.56/month**.
+  - Scaled (max 2 running nodes): Estimated up to **~$33.12/month**.
+- **Public IPv4 Addresses:**
+  AWS charges ~$0.005/hour per in-use public IPv4 address, which is estimated at **~$3.60/month per active worker node**.
+- **EBS Storage Volumes:**
+  Each worker node attaches a standard 20 GiB gp3 root volume at ~$0.08/GB-month, estimated at **~$1.60/month per node**.
+
+#### 3. Architecture Cost Optimizations
+- **Single-Tier Public Subnets (Zero NAT Gateway Cost):**
+  By deploying worker nodes directly into public subnets with an Internet Gateway, CloudPulse eliminates the need for AWS NAT Gateways. A NAT Gateway would incur a flat ~$0.045/hour charge (~$32.40/month) plus $0.045/GB data processing fees, saving over **~$32+/month estimated** in fixed baseline infrastructure charges.
+- **Zero Remote State Charges:**
+  Terraform runs with local state management during development, avoiding AWS S3 bucket and DynamoDB state locking costs ($0.00).
+
+#### 4. Estimated Monthly Total Summary
+| Component | Applicable Tier / Spec | Estimated Hourly Cost | Estimated Monthly Cost |
+| :--- | :--- | :--- | :--- |
+| **EKS Control Plane** | Standard Support (k8s 1.32) | ~$0.10 / hour | ~$73.00 / month |
+| **EC2 Worker Node (x1)** | `t3.small` (ap-south-1) | ~$0.023 / hour | ~$16.56 / month |
+| **Public IPv4 Address (x1)** | In-use public IP | ~$0.005 / hour | ~$3.60 / month |
+| **EBS Root Volume (20GB gp3)** | gp3 volume storage | — | ~$1.60 / month |
+| **NAT Gateway** | *Omitted by design* | $0.00 | $0.00 |
+| **Estimated Total Baseline** | **1 active node (Standard Tier)** | **~$0.128 / hour** | **~$94.76 / month** |
+| *High Cost Risk Scenario* | *Extended Support (k8s <=1.30/1.31)* | *~$0.628 / hour* | *~$459.76 / month* |
+
+> [!WARNING]
+> **Teardown Reminder:** Infrastructure should never be left running unattended. Always execute `terraform destroy` immediately after testing or evaluation to stop all billable AWS charges.
+
+---
+
+## 9. Troubleshooting Guidance
 
 1. **Docker Compose: Port 3000 or 8000 already in use:**
    - Check if another service (or local Vite / Uvicorn instance) is running on the port:

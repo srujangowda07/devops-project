@@ -29,6 +29,8 @@ yarn-error.log*
 *.tfstate.*
 *.tfvars
 !terraform.tfvars.example
+*.tfplan
+tfplan
 .terraform.lock.hcl
 
 # Operating System & IDE Artifacts
