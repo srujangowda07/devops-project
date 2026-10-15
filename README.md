@@ -1,10 +1,30 @@
 # CloudPulse — DevOps Final Capstone Platform
 
-CloudPulse is a production-grade DevOps capstone platform: a multi-tier cloud infrastructure inventory and incident management system demonstrating modern software engineering and cloud operations from a local developer environment to a monitored Kubernetes cluster on AWS.
+**CloudPulse** is a multi-cloud resource inventory and incident management platform designed to help engineering teams track cloud infrastructure, estimate monthly costs, and manage operational incidents across AWS, GCP, and Azure.
+
+Built with React, FastAPI, and PostgreSQL, it demonstrates end-to-end DevOps engineering practices through multi-stage Docker containerization, an automated GitHub Actions CI/CD pipeline, Trivy vulnerability scanning, Terraform-based AWS infrastructure, Kubernetes deployments using Helm, and full-stack observability with Prometheus and Grafana.
 
 ---
 
-## 1. What we are building
+## 1. Technology Stack Summary
+
+| Layer | Technology | Key Capabilities & Role in CloudPulse |
+| :--- | :--- | :--- |
+| **Frontend UI** | React 18 & Vite | Single-page dashboard, responsive CSS design system, dark/light theme, KPI cards |
+| **Backend API** | FastAPI & Python 3.12 | High-performance asynchronous REST API, Pydantic v2 validation, `/health`, `/ready` |
+| **Database & ORM** | PostgreSQL 16 & SQLAlchemy 2.x | Relational schema, cascade delete relationships, version-controlled Alembic migrations |
+| **Reverse Proxy** | Nginx Unprivileged (Alpine) | Static asset delivery, SPA routing, `/api/` reverse-proxying without CORS risks |
+| **Containerization** | Docker & Docker Compose | Multi-stage builds, non-root users (`UID 10001`, `UID 101`), local 3-tier orchestration |
+| **CI/CD Automation** | GitHub Actions | 8-stage automated workflow, parallel quality gates, commit-SHA immutable image tags |
+| **Security Scanning** | Aqua Security Trivy | Container vulnerability scanning for OS and library CVEs with strict quality gate |
+| **Container Registry**| GitHub Packages (GHCR) | OCI registry hosting immutable version-controlled container images |
+| **Infrastructure as Code** | Terraform v1.9+ | Declarative AWS VPC (dual-AZ), Internet Gateway routing, Amazon EKS cluster |
+| **Kubernetes & Helm** | Kubernetes & Helm v3 | Package management, 2-replica high availability, DB migration Job, Ingress routing |
+| **Full Observability** | Prometheus & Grafana | Automated metrics scraping (`/metrics`), pre-provisioned live monitoring dashboards |
+
+---
+
+## 2. What we are building
 
 CloudPulse represents a realistic, containerized three-tier cloud operations platform:
 
@@ -71,7 +91,7 @@ GitHub Actions CI/CD
 
 ---
 
-## 2. Repository structure
+## 3. Repository structure
 
 ```text
 devops-project/
@@ -113,7 +133,7 @@ devops-project/
 ├── monitoring/                 # Standalone reference monitoring configurations
 │   ├── prometheus/             # Prometheus scrape configuration
 │   └── grafana/                # Datasource and dashboard definitions
-├── screenshots/                # Verification evidence gallery (22 terminal/browser artifacts)
+├── screenshots/                # Verification evidence gallery (24 terminal/browser artifacts)
 ├── docs/                       # Technical systems documentation
 │   └── PROJECT_REPORT.md       # Comprehensive technical engineering report
 ├── docker-compose.yml          # Three-tier local orchestration stack
@@ -125,7 +145,7 @@ devops-project/
 
 # PART A — UNDERSTAND THE APPLICATION
 
-## 3. Frontend Architecture
+## 4. Frontend Architecture
 
 The frontend is a modern single-page dashboard designed for cloud operations and FinOps tracking:
 
@@ -136,7 +156,7 @@ The frontend is a modern single-page dashboard designed for cloud operations and
 - **Theme Switcher:** Seamless toggle between Dark and Light mode.
 - **Reverse Proxy Routing:** The frontend browser interacts solely with relative URLs (`/api/*`, `/health`). Nginx in Docker or Kubernetes Ingress transparently routes traffic to the backend, eliminating cross-origin (CORS) exposure in production.
 
-## 4. Backend Architecture & REST APIs
+## 5. Backend Architecture & REST APIs
 
 FastAPI exposes a fully typed REST interface validated by Pydantic schemas:
 
@@ -194,7 +214,7 @@ Prometheus requires metrics in a standardized, machine-readable text format. The
 
 # PART B — RUN IT LOCALLY
 
-## 5. Fastest Method: Docker Compose
+## 6. Fastest Method: Docker Compose
 
 Docker Compose runs the complete three-tier application stack locally with a single command.
 
@@ -231,7 +251,7 @@ docker compose down -v
 
 ---
 
-## 6. Run Backend Directly
+## 7. Run Backend Directly
 
 ### Requirements:
 - Python 3.12+
@@ -274,7 +294,7 @@ curl http://localhost:8000/api/resources
 
 ---
 
-## 7. Run Frontend Directly
+## 8. Run Frontend Directly
 
 ### Requirements:
 - Node.js 20+ & npm
@@ -291,7 +311,7 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 
 # PART C — TESTING & QUALITY GATES
 
-## 8. Pytest Automated Test Suite
+## 9. Pytest Automated Test Suite
 
 CloudPulse uses **pytest** to enforce automated quality gates:
 
@@ -333,7 +353,7 @@ No broken or vulnerable container is promoted
 
 # PART D — GIT & VERSION CONTROL WORKFLOW
 
-## 9. Version Control Discipline
+## 10. Version Control Discipline
 
 CloudPulse adheres to strict Git hygiene and branch management:
 
@@ -354,7 +374,7 @@ git push -u origin main
 
 # PART E — DOCKER CONTAINERIZATION
 
-## 10. Multi-Stage Dockerfiles
+## 11. Multi-Stage Dockerfiles
 
 ### Backend Container (`backend/Dockerfile`)
 The backend image utilizes a hardened multi-stage Python setup:
@@ -396,7 +416,7 @@ docker run --rm -p 3000:8080 cloudpulse-frontend:local
 
 # PART F — CI/CD AUTOMATION
 
-## 11. GitHub Actions Pipeline Architecture
+## 12. GitHub Actions Pipeline Architecture
 
 The workflow in `.github/workflows/ci-cd.yml` acts as an automated quality gate and container publishing pipeline:
 
@@ -429,7 +449,7 @@ Monitoring Validation ────────┘          │
 
 # PART G — SECURITY & VULNERABILITY SCANNING
 
-## 12. Aqua Security Trivy Scanner
+## 13. Aqua Security Trivy Scanner
 
 Container images are scanned for operating system and application library vulnerabilities before registry publishing:
 
@@ -447,7 +467,7 @@ trivy image --severity HIGH,CRITICAL cloudpulse-frontend:local
 
 # PART H — INFRASTRUCTURE AS CODE (TERRAFORM)
 
-## 13. AWS VPC & Amazon EKS Architecture
+## 14. AWS VPC & Amazon EKS Architecture
 
 The cloud infrastructure is provisioned declaratively in `terraform/`:
 
@@ -482,7 +502,7 @@ terraform validate
 
 # PART I — KUBERNETES & HELM DEPLOYMENT
 
-## 14. Helm Packaging (`helm/cloudpulse`)
+## 15. Helm Packaging (`helm/cloudpulse`)
 
 The entire application is packaged as a reusable Helm chart in `helm/cloudpulse/`:
 
@@ -504,7 +524,7 @@ helm template cloudpulse helm/cloudpulse --namespace cloudpulse
 
 # PART J — OBSERVABILITY & MONITORING
 
-## 15. Prometheus & Grafana Telemetry
+## 16. Prometheus & Grafana Telemetry
 
 CloudPulse deploys an integrated observability stack with zero manual dashboard configuration:
 
@@ -528,7 +548,7 @@ kubectl port-forward svc/cloudpulse-grafana -n cloudpulse 3001:3000
 
 # PART K — TEARDOWN & REPRODUCIBILITY
 
-## 16. Clean Decommissioning
+## 17. Clean Decommissioning
 
 To guarantee zero ongoing AWS charges after live deployment, resources are decommissioned in this exact order:
 

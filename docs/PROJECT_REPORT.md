@@ -194,6 +194,12 @@ Monitoring Validation ────────┘          │
 ![Git Commit History](../screenshots/06_git_log_commits.png)  
 *Figure 7.2: Git commit history illustrating clean commit discipline and traceability.*
 
+![GitHub Packages: Frontend Container Image](../screenshots/08_a_packages.png)  
+*Figure 7.3: GitHub Packages (GHCR) repository for devops-project-frontend showing immutable commit-SHA tagged image releases.*
+
+![GitHub Packages: Backend Container Image](../screenshots/08_b_packages.png)  
+*Figure 7.4: GitHub Packages (GHCR) repository for devops-project-backend showing immutable commit-SHA tagged image releases.*
+
 ---
 
 ## 8. DevSecOps & Vulnerability Management
