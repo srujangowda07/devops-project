@@ -1,6 +1,6 @@
 # CloudPulse — Cloud Infrastructure & Incident Management Platform
 
-> **Status:** Phase 4 Complete — GitHub Actions CI/CD pipeline implemented with isolated backend Pytest testing, reproducible frontend Vite verification, Docker Buildx caching, and GHCR container publishing on main branch pushes.
+> **Status:** Phase 5 Complete — Trivy container security scanning integrated into GitHub Actions CI/CD pipeline with automated security gates (HIGH/CRITICAL severity thresholds) and SARIF report artifacts.
 
 ---
 
@@ -21,6 +21,7 @@ Modern engineering teams manage increasingly distributed cloud workloads across 
 - **Responsive Web Dashboard:** React + Vite single-page application with operational KPI cards, filterable inventory table, interactive registration/edit modals, and incident drawers.
 - **Containerized Architecture:** Production multi-stage Docker builds running as non-root users (`appuser` UID 10001, `nginx` UID 101), orchestrated via Docker Compose.
 - **Automated CI/CD Quality Gate:** GitHub Actions workflow executing backend tests, frontend builds, and publishing versioned, immutable Docker images to GHCR.
+- **DevSecOps Vulnerability Gate:** Automated Trivy container vulnerability scanning blocking images with HIGH or CRITICAL findings.
 - **Automated Quality Gate:** Pytest test suite covering health, readiness, CRUD operations, relationship integrity, and input validation.
 
 ---
@@ -38,6 +39,7 @@ Modern engineering teams manage increasingly distributed cloud workloads across 
 | **Reverse Proxy** | Nginx Unprivileged (Alpine) | SPA static hosting & reverse proxy routing `/api/` |
 | **Container Engine** | Docker & Docker Compose | Multi-container orchestration, networking, and volumes |
 | **CI/CD Pipeline** | GitHub Actions | Automated lint, test, build, and container registry publishing |
+| **Security Scanning** | Aqua Security Trivy | Container image vulnerability scanner (OS & app dependencies) |
 | **Container Registry**| GitHub Packages (GHCR) | Secure OCI container image distribution with SHA tags |
 
 ---
@@ -215,10 +217,10 @@ npm run dev
 
 ## 7. Automated CI/CD Pipeline (GitHub Actions & GHCR)
 
-CloudPulse includes a production-grade continuous integration and continuous delivery workflow implemented via GitHub Actions ([.github/workflows/ci-cd.yml](file:///.github/workflows/ci-cd.yml)).
+CloudPulse includes a production-grade continuous integration, continuous delivery, and DevSecOps security scanning workflow implemented via GitHub Actions ([.github/workflows/ci-cd.yml](file:///.github/workflows/ci-cd.yml)).
 
 ### Purpose & Architecture
-The CI/CD pipeline acts as an automated quality gate and container publishing engine. It ensures that every code change is validated for functional correctness and builds cleanly before container images are generated and published to GitHub Container Registry (GHCR).
+The CI/CD pipeline acts as an automated quality gate, vulnerability scanner, and container publishing engine. It ensures that every code change is validated for functional correctness, builds cleanly, and passes automated security scanning before container images are generated and published to GitHub Container Registry (GHCR).
 
 ```text
 [ Git Push / Pull Request ]
@@ -236,11 +238,12 @@ The CI/CD pipeline acts as an automated quality gate and container publishing en
                  (Both must pass)
                          |
                          v
-            [ Job 3: build-and-publish ]
-            - Multi-stage Docker Buildx
-            - Cache via GitHub Actions (type=gha)
-            - Push only on main branch pushes
-            - Publish to GHCR with full commit SHA tag
+          [ Job 3: build-scan-publish ]
+          ├── 1. Build Backend & Frontend Docker images locally
+          ├── 2. Scan Backend image with Trivy (exit-code 1 on HIGH/CRITICAL)
+          ├── 3. Scan Frontend image with Trivy (exit-code 1 on HIGH/CRITICAL)
+          ├── 4. Generate & Upload SARIF scan report artifacts
+          └── 5. Publish to GHCR with full commit SHA tag (main push only)
 ```
 
 ### Triggers & Concurrency Controls
@@ -257,10 +260,26 @@ The CI/CD pipeline acts as an automated quality gate and container publishing en
    - Sets up Node.js 22 with npm dependency caching.
    - Executes `npm ci` for lockfile-reproducible dependency installation.
    - Executes `npm run build` to compile the Vite + React single-page application and verify zero syntax/bundling errors.
-3. **`build-and-publish` (Job 3):**
-   - Depends explicitly on both `backend-tests` and `frontend-verification`. If either fails, publishing is immediately aborted.
-   - Builds both `backend` and `frontend` Docker images using Docker Buildx and GitHub Actions layer caching (`type=gha`).
+3. **`build-scan-publish` (Job 3):**
+   - Depends explicitly on both `backend-tests` and `frontend-verification`. If either fails, Docker builds are not executed.
+   - Builds both `backend` and `frontend` Docker images using Docker Buildx and GitHub Actions layer caching (`type=gha`), loading them into the runner's local Docker daemon.
+   - **Trivy Container Security Gate:** Scans both `backend` and `frontend` images before any publishing occurs.
    - Uses minimal token permissions (`contents: read`, `packages: write`).
+
+### DevSecOps: Trivy Container Vulnerability Scanning
+To enforce a shift-left security posture, container images are scanned using Aqua Security's official Trivy scanner (`aquasecurity/trivy-action@0.30.0`):
+- **Images Scanned:** Both `cloudpulse-backend` (`python:3.12-slim`) and `cloudpulse-frontend` (`nginxinc/nginx-unprivileged:alpine`).
+- **Scan Targets:** Operating system packages (Debian/Alpine base layers) and application libraries (Python pip packages, Node.js npm dependencies).
+- **Severity Threshold:** Configured strictly to `HIGH,CRITICAL` with `exit-code: 1`. If any actionable HIGH or CRITICAL CVEs are detected, Trivy immediately fails the pipeline, preventing vulnerable images from reaching GHCR.
+- **Report Artifacts:** Machine-readable SARIF vulnerability reports (`trivy-backend-report.sarif` and `trivy-frontend-report.sarif`) are uploaded as GitHub Actions artifacts (`trivy-security-reports`) retained for 7 days.
+- **Trivy Log Output:** Full human-readable tables detailing CVE IDs, severity levels, installed package versions, and fixed versions are displayed directly in the GitHub Actions runner console for immediate inspection.
+
+### Investigating & Resolving Vulnerabilities
+When a Trivy scan fails:
+1. Open the failed GitHub Actions run and expand the `Scan Backend image with Trivy (Security Gate)` or `Scan Frontend image with Trivy (Security Gate)` step.
+2. Identify the affected package name, current version, fixed version, and CVE reference.
+3. For base image CVEs: Upgrade the base image tag in the corresponding `Dockerfile` (e.g. newer Debian slim or Alpine release).
+4. For application dependencies: Bump the vulnerable library version in `backend/requirements.txt` or `frontend/package.json` (`npm update`), re-test locally (`pytest`, `npm run build`), and push the fix.
 
 ### Image Registry & Immutable Tagging (GHCR)
 Published container images are pushed to GitHub Container Registry under:
@@ -270,15 +289,16 @@ Published container images are pushed to GitHub Container Registry under:
 > [!NOTE]
 > **Immutable SHA Tagging:** Images are strictly tagged with the full 40-character Git commit SHA (`${{ github.sha }}`) to guarantee immutability, traceability, and zero-drift rollbacks. The pipeline deliberately does not publish or rely on floating `latest` tags.
 >
-> **Pull Request Security:** When the workflow executes for pull requests, Docker images are built to validate compilation and Dockerfile syntax, but image push is **disabled** (`push: false`). Images are pushed to GHCR exclusively on verified merges and pushes to `main`.
+> **Pull Request Security:** When the workflow executes for pull requests, Docker images are built and scanned with Trivy to validate security gates, but image push is **disabled** (`push: false`). Images are pushed to GHCR exclusively on verified merges and pushes to `main`.
 
 ### Inspecting Workflow Runs & Diagnosing Failures
 1. Navigate to the **Actions** tab in your GitHub repository.
 2. Select the **CloudPulse CI/CD** workflow from the left sidebar to view recent runs.
-3. Click on a specific run to inspect the status of `Backend Tests (Pytest)`, `Frontend Build & Verification`, and `Build & Publish Docker Images (GHCR)`.
+3. Click on a specific run to inspect the status of `Backend Tests (Pytest)`, `Frontend Build & Verification`, and `Build, Scan & Publish Images`.
 4. If a job fails, click on the job to expand step logs:
    - For backend test failures: Check the `Run Pytest test suite` step output for failed assertion tracebacks.
    - For frontend build errors: Check the `Build frontend production bundle` step output for Vite/Rollup syntax or dependency errors.
+   - For security scan failures: Check the `Scan Backend image with Trivy` or `Scan Frontend image with Trivy` step for detected CVE tables.
    - For image publishing errors: Ensure `GITHUB_TOKEN` has read and write packages permissions in repository settings (**Settings > Actions > General > Workflow permissions**).
 
 ---

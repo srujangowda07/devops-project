@@ -69,8 +69,8 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-  build-and-publish:
-    name: Build & Publish Docker Images (GHCR)
+  build-scan-publish:
+    name: Build, Scan & Publish Images
     needs: [backend-tests, frontend-verification]
     runs-on: ubuntu-latest
     permissions:
@@ -88,6 +88,80 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Build images and load into local Docker daemon for scanning
+      - name: Build Backend image locally
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          load: true
+          tags: ${{ env.IMAGE_BACKEND }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Frontend image locally
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          load: true
+          tags: ${{ env.IMAGE_FRONTEND }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # DevSecOps: Scan backend image for OS and library vulnerabilities
+      - name: Scan Backend image with Trivy (Security Gate)
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          image-ref: ${{ env.IMAGE_BACKEND }}:${{ github.sha }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'HIGH,CRITICAL'
+
+      # DevSecOps: Scan frontend image for OS and library vulnerabilities
+      - name: Scan Frontend image with Trivy (Security Gate)
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          image-ref: ${{ env.IMAGE_FRONTEND }}:${{ github.sha }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'HIGH,CRITICAL'
+
+      # Generate machine-readable SARIF reports
+      - name: Generate Backend SARIF vulnerability report
+        if: always()
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          image-ref: ${{ env.IMAGE_BACKEND }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-backend-report.sarif'
+          severity: 'HIGH,CRITICAL'
+
+      - name: Generate Frontend SARIF vulnerability report
+        if: always()
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          image-ref: ${{ env.IMAGE_FRONTEND }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-frontend-report.sarif'
+          severity: 'HIGH,CRITICAL'
+
+      # Upload machine-readable scan artifacts
+      - name: Upload Trivy scan SARIF reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-security-reports
+          path: |
+            trivy-backend-report.sarif
+            trivy-frontend-report.sarif
+          retention-days: 7
+
+      # Authenticate to GHCR only on main branch pushes
       - name: Log in to GitHub Container Registry
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
@@ -96,22 +170,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Backend image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./backend
-          file: ./backend/Dockerfile
-          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          tags: ${{ env.IMAGE_BACKEND }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      # Publish images to GHCR only after all checks and security scans pass
+      - name: Publish Backend image to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker push ${{ env.IMAGE_BACKEND }}:${{ github.sha }}
 
-      - name: Build and push Frontend image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./frontend
-          file: ./frontend/Dockerfile
-          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          tags: ${{ env.IMAGE_FRONTEND }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Publish Frontend image to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker push ${{ env.IMAGE_FRONTEND }}:${{ github.sha }}
