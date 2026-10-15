@@ -247,7 +247,22 @@ def test_incident_nonexistent_resource_fails(client: TestClient):
 
 
 def test_metrics_endpoint(client: TestClient):
-    """14. Metrics endpoint exposes Prometheus format."""
-    response = client.get("/metrics")
+    """14. Metrics endpoint exposes valid Prometheus text format without sensitive data."""
+    # Trigger requests to generate metrics
+    client.get("/health")
+    client.get("/api/resources")
+
+    response = client.get("/metrics") 
     assert response.status_code == 200
-    assert "http_requests" in response.text or "process_cpu_seconds" in response.text or "python_info" in response.text
+    assert "text/plain" in response.headers.get("content-type", "")
+
+    # Verify standard application and runtime metrics are exposed
+    metrics_text = response.text
+    assert "http_requests_total" in metrics_text
+    assert "python_info" in metrics_text
+    assert "http_request_duration" in metrics_text
+
+    # Ensure no sensitive authorization headers or passwords are leaked into metric labels
+    assert "Bearer" not in metrics_text
+    assert "secret_key" not in metrics_text
+    assert "password=" not in metrics_text.lower()

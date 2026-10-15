@@ -131,3 +131,35 @@ Database URL connection string
 {{- $db := .Values.postgresql.auth.database }}
 {{- printf "postgresql+psycopg://%s:%s@%s:%v/%s" $user $password $host $port $db }}
 {{- end }}
+
+{{/*
+Prometheus selector labels
+*/}}
+{{- define "cloudpulse.prometheus.selectorLabels" -}}
+{{ include "cloudpulse.selectorLabels" . }}
+app.kubernetes.io/component: prometheus
+{{- end }}
+
+{{/*
+Prometheus labels
+*/}}
+{{- define "cloudpulse.prometheus.labels" -}}
+{{ include "cloudpulse.labels" . }}
+app.kubernetes.io/component: prometheus
+{{- end }}
+
+{{/*
+Grafana selector labels
+*/}}
+{{- define "cloudpulse.grafana.selectorLabels" -}}
+{{ include "cloudpulse.selectorLabels" . }}
+app.kubernetes.io/component: grafana
+{{- end }}
+
+{{/*
+Grafana labels
+*/}}
+{{- define "cloudpulse.grafana.labels" -}}
+{{ include "cloudpulse.labels" . }}
+app.kubernetes.io/component: grafana
+{{- end }}

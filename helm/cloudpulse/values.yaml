@@ -153,7 +153,10 @@ postgresql:
   auth:
     database: "cloudpulse"
     username: "cloudpulse"
-    # Default demo credential; override via --set postgresql.auth.password=... or secret in production
+    # IMPORTANT: The value below is a fallback for local testing/demo purposes ONLY.
+    # NEVER use this default password in a production environment.
+    # In production, provide an external secret via database.existingSecret or override via:
+    #   helm install cloudpulse ... --set postgresql.auth.password="$(openssl rand -base64 24)"
     password: "cloudpulse"
 
   service:
@@ -191,3 +194,84 @@ database:
 migration:
   enabled: true
   backoffLimit: 3
+
+# -----------------------------------------------------------------------------
+# Observability Configuration (Prometheus & Grafana)
+# -----------------------------------------------------------------------------
+monitoring:
+  enabled: true
+
+  prometheus:
+    enabled: true
+    image:
+      repository: "prom/prometheus"
+      tag: "v2.54.1"
+      pullPolicy: IfNotPresent
+
+    service:
+      type: ClusterIP
+      port: 9090
+      targetPort: 9090
+
+    scrapeInterval: "15s"
+    scrapeTimeout: "10s"
+
+    resources:
+      limits:
+        cpu: 300m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      runAsGroup: 65534
+      fsGroup: 65534
+
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: false
+      capabilities:
+        drop:
+          - ALL
+
+  grafana:
+    enabled: true
+    image:
+      repository: "grafana/grafana"
+      tag: "11.2.0"
+      pullPolicy: IfNotPresent
+
+    service:
+      type: ClusterIP
+      port: 3000
+      targetPort: 3000
+
+    adminUser: "admin"
+    # IMPORTANT: Demo administrative password for local validation.
+    # In production, override via --set monitoring.grafana.adminPassword=... or use an existingSecret.
+    adminPassword: "cloudpulse-demo-admin"
+
+    resources:
+      limits:
+        cpu: 300m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 128Mi
+
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 472
+      runAsGroup: 472
+      fsGroup: 472
+
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: false
+      capabilities:
+        drop:
+          - ALL
+

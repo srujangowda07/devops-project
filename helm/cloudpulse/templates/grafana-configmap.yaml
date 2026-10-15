@@ -1,0 +1,35 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.grafana.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cloudpulse.fullname" . }}-grafana-config
+  labels:
+    {{- include "cloudpulse.grafana.labels" . | nindent 4 }}
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://{{ include "cloudpulse.fullname" . }}-prometheus:{{ .Values.monitoring.prometheus.service.port }}
+        isDefault: true
+        editable: false
+        jsonData:
+          timeInterval: {{ .Values.monitoring.prometheus.scrapeInterval | default "15s" }}
+
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: 'cloudpulse'
+        orgId: 1
+        folder: 'CloudPulse'
+        type: file
+        disableDeletion: true
+        editable: true
+        options:
+          path: /etc/grafana/dashboards
+
+  cloudpulse-overview.json: |
+{{ .Files.Get "dashboards/cloudpulse-overview.json" | indent 4 }}
+{{- end }}

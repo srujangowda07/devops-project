@@ -1,0 +1,17 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.grafana.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cloudpulse.fullname" . }}-grafana
+  labels:
+    {{- include "cloudpulse.grafana.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.monitoring.grafana.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.monitoring.grafana.service.port }}
+      targetPort: {{ .Values.monitoring.grafana.service.targetPort }}
+      protocol: TCP
+  selector:
+    {{- include "cloudpulse.grafana.selectorLabels" . | nindent 4 }}
+{{- end }}

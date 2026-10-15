@@ -1,0 +1,73 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.grafana.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cloudpulse.fullname" . }}-grafana
+  labels:
+    {{- include "cloudpulse.grafana.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "cloudpulse.grafana.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cloudpulse.grafana.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.monitoring.grafana.podSecurityContext | nindent 8 }}
+      containers:
+        - name: grafana
+          image: "{{ .Values.monitoring.grafana.image.repository }}:{{ .Values.monitoring.grafana.image.tag }}"
+          imagePullPolicy: {{ .Values.monitoring.grafana.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.monitoring.grafana.service.targetPort }}
+              protocol: TCP
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: {{ .Values.monitoring.grafana.adminUser | quote }}
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: {{ .Values.monitoring.grafana.adminPassword | quote }}
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.monitoring.grafana.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.monitoring.grafana.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/grafana/provisioning/datasources/datasources.yaml
+              subPath: datasources.yaml
+            - name: config
+              mountPath: /etc/grafana/provisioning/dashboards/dashboards.yaml
+              subPath: dashboards.yaml
+            - name: config
+              mountPath: /etc/grafana/dashboards/cloudpulse-overview.json
+              subPath: cloudpulse-overview.json
+            - name: storage
+              mountPath: /var/lib/grafana
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "cloudpulse.fullname" . }}-grafana-config
+        - name: storage
+          emptyDir: {}
+{{- end }}

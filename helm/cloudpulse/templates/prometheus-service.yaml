@@ -1,0 +1,17 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.prometheus.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cloudpulse.fullname" . }}-prometheus
+  labels:
+    {{- include "cloudpulse.prometheus.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.monitoring.prometheus.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.monitoring.prometheus.service.port }}
+      targetPort: {{ .Values.monitoring.prometheus.service.targetPort }}
+      protocol: TCP
+  selector:
+    {{- include "cloudpulse.prometheus.selectorLabels" . | nindent 4 }}
+{{- end }}

@@ -458,9 +458,20 @@ CloudPulse provides declarative Kubernetes manifests and a production-grade Helm
 k8s/
 └── namespace.yaml                     # Standalone namespace declaration for kubectl workflows
 
+monitoring/
+├── prometheus/
+│   └── prometheus.yml                 # Standalone reference Prometheus scrape configuration
+└── grafana/
+    ├── datasources/
+    │   └── datasources.yaml           # Standalone reference Grafana datasource provisioning
+    └── dashboards/
+        └── cloudpulse-overview.json   # Standalone reference Grafana dashboard JSON
+
 helm/cloudpulse/
 ├── Chart.yaml                         # Helm chart definition and metadata (k8s >= 1.30.0-0)
 ├── values.yaml                        # Default deployment configuration, image tags, and resource sizing
+├── dashboards/
+│   └── cloudpulse-overview.json       # Embedded Grafana dashboard definition
 └── templates/
     ├── _helpers.tpl                   # Standard template helpers, naming conventions, and common labels
     ├── namespace.yaml                 # Conditional namespace resource (enabled via namespace.create: true)
@@ -473,7 +484,13 @@ helm/cloudpulse/
     ├── backend-service.yaml           # ClusterIP Service for backend (port 8000)
     ├── frontend-deployment.yaml       # Multi-replica Nginx frontend Deployment (non-root UID 101)
     ├── frontend-service.yaml          # ClusterIP Service for frontend (port 80 -> targetPort 8080)
-    └── ingress.yaml                   # Ingress routing /api to backend and / to frontend
+    ├── ingress.yaml                   # Ingress routing /api to backend and / to frontend
+    ├── prometheus-configmap.yaml      # Scrape configuration targeting backend /metrics
+    ├── prometheus-deployment.yaml     # Internal Prometheus deployment (non-root UID 65534)
+    ├── prometheus-service.yaml        # Internal ClusterIP Service for Prometheus (port 9090)
+    ├── grafana-configmap.yaml         # Datasources & dashboards provisioning ConfigMap
+    ├── grafana-deployment.yaml        # Internal Grafana deployment (non-root UID 472)
+    └── grafana-service.yaml           # Internal ClusterIP Service for Grafana (port 3000)
 ```
 
 ### Kubernetes Architecture & Workloads
@@ -499,7 +516,8 @@ helm/cloudpulse/
    - **Connection String:** Provided via `DATABASE_URL` stored inside Kubernetes Secret `cloudpulse-secret`.
    - **Internal Service Isolation:** PostgreSQL is accessible strictly inside the cluster on internal ClusterIP `cloudpulse-postgresql:5432`. It is never exposed via Ingress or external LoadBalancer.
    - **Database Migrations:** Executed via a dedicated Kubernetes `Job` (`cloudpulse-migration`) running `alembic upgrade head`. Running migrations through an independent Job prevents race conditions and lock contention that occur when multiple backend replicas attempt simultaneous schema migrations.
-   - **Secret Encryption Disclaimer:** Base64 encoding in Kubernetes Secrets is a wire/storage format in etcd, not encryption. For production workloads, integrate with AWS Secrets Manager via AWS Secrets Store CSI Driver or HashiCorp Vault.
+   - > [!WARNING]
+     > **Credential Hardening & Secret Disclaimer:** The default database password `cloudpulse` is strictly a development/demo fallback. It must never be treated as a production secret. For production environments, database credentials should be injected via `database.existingSecret` from an external secret store (e.g. AWS Secrets Manager with Secrets Store CSI Driver or HashiCorp Vault) or overridden with a cryptographically secure random value via `--set postgresql.auth.password=...`. Base64 encoding in Kubernetes Secrets is a storage serialization format in etcd, not encryption.
 6. **Storage & Persistence Considerations:**
    - In-cluster PostgreSQL defaults to `emptyDir` ephemeral storage (`persistence.enabled: false`) for local validation and lightweight testing.
    - To enable persistent storage on Amazon EKS (`persistence.enabled: true`), the AWS EBS CSI Driver (`aws-ebs-csi-driver`) add-on and an active `StorageClass` (e.g. `gp3`) must be installed in the cluster. Without an active CSI provisioner, PVCs will remain in a `Pending` state.
@@ -510,13 +528,14 @@ Image repositories and tags are fully configurable in `values.yaml` and referenc
 - **Backend Image:** `ghcr.io/srujangowda07/devops-project-backend`
 - **Default Tag:** Pinned to immutable commit SHA `fd86c6f404888e7a804f8966628a4c1451ca7a9d`.
 
-To deploy a custom or locally built image tag:
-```bash
-helm upgrade --install cloudpulse ./helm/cloudpulse \
-  --namespace cloudpulse \
-  --set frontend.image.tag="<commit-sha>" \
-  --set backend.image.tag="<commit-sha>"
-```
+> [!NOTE]
+> **Image Grounding & Availability:** Image tags reflect the immutable 40-character Git commit SHA naming scheme produced by the GitHub Actions workflow (`${{ github.sha }}`). In offline local testing or prior to CI publishing, do not assume images exist remotely on GHCR without running `docker pull` or checking container registry permissions. Use locally built images or supply a verified tag via:
+> ```bash
+> helm upgrade --install cloudpulse ./helm/cloudpulse \
+>   --namespace cloudpulse \
+>   --set frontend.image.tag="<commit-sha>" \
+>   --set backend.image.tag="<commit-sha>"
+> ```
 
 ### Required CLI Tools
 - **Kubernetes CLI (`kubectl`):** v1.30+ (verified with `kubectl version --client`)
@@ -551,7 +570,81 @@ helm upgrade --install cloudpulse ./helm/cloudpulse --namespace cloudpulse
 
 ---
 
-## 10. Troubleshooting Guidance
+## 10. Application Observability (Prometheus & Grafana)
+
+CloudPulse includes comprehensive end-to-end application and platform observability powered by Prometheus and Grafana.
+
+### 1. Application Metrics Architecture
+The FastAPI backend exposes native Prometheus metrics at `/metrics` using `prometheus-fastapi-instrumentator`:
+- **Prometheus Text Format:** Adheres to open Prometheus exposition standards (`Content-Type: text/plain; version=0.0.4`).
+- **Telemetry Boundaries:**
+  - Exposes process telemetry, garbage collection counts, request rates, HTTP status distribution, and latency histogram buckets.
+  - **Zero Sensitive Data Exposure:** Authorization headers, passwords, request bodies, and database connection strings are never collected in metric labels.
+  - **Bounded Cardinality:** Handlers are normalized (e.g., `/api/resources`, `/health`, `/ready`) rather than embedding arbitrary query parameters or raw user IDs.
+
+#### Key Metrics Emitted by CloudPulse Backend:
+| Metric Name | Type | Description |
+| :--- | :--- | :--- |
+| `http_requests_total` | Counter | Total requests partitioned by `handler`, `method`, and `status` (`2xx`, `4xx`, `5xx`). |
+| `http_request_duration_seconds_bucket` | Histogram | Latency histogram buckets for computing p50, p90, and p95 request percentiles. |
+| `python_info` | Gauge | Runtime metadata (Python version, CPython implementation details). |
+| `python_gc_collections_total` | Counter | Python garbage collection counts partitioned by generation (`0`, `1`, `2`). |
+| `up` | Gauge | Standard Prometheus heartbeat indicator (`1` = healthy, `0` = unreachable). |
+
+### 2. Prometheus Scrape Configuration
+Prometheus is deployed as an internal cluster service and scrapes the backend every 15 seconds:
+- **Service Discovery Target:** Resolves internally to `cloudpulse-backend:8000` via Kubernetes CoreDNS.
+- **Scrape Path:** `/metrics`
+- **Internal Isolation:** Exposed exclusively via internal `ClusterIP` Service on port `9090`. It has **no Ingress rule** and **no cloud load balancer**, ensuring zero public attack surface.
+
+### 3. Grafana Dashboard & Provisioning
+Grafana is deployed with automated, declarative provisioning:
+- **Automated Datasource Provisioning:** Configured via `/etc/grafana/provisioning/datasources/datasources.yaml` to connect to internal Prometheus endpoint `http://cloudpulse-prometheus:9090` out-of-the-box.
+- **Automated Dashboard Provisioning:** Automatically loads [monitoring/grafana/dashboards/cloudpulse-overview.json](file:///c:/Users/kssru/OneDrive/Documents/DevOps/DEVOPS-PROJECT/devops-project/monitoring/grafana/dashboards/cloudpulse-overview.json) under the **CloudPulse** folder.
+- **Internal Security:** Exposed strictly via internal `ClusterIP` Service on port `3000`. Public sign-up is disabled (`GF_USERS_ALLOW_SIGN_UP: false`).
+
+#### Provisioned Dashboard Panels:
+1. **Backend Service Status:** Stat panel showing live health (`UP` in green / `DOWN` in red) via `up{job="cloudpulse-backend"}`.
+2. **Total Requests Processed:** Stat panel tracking total request count via `sum(http_requests_total)`.
+3. **HTTP 5xx Error Rate (%):** Stat panel alerting when server error rate exceeds thresholds via `sum(rate(http_requests_total{status=~"5.*|5xx"}[1m])) / sum(rate(http_requests_total[1m])) * 100`.
+4. **Python Runtime Info:** Stat panel tracking active Python version and runtime environment.
+5. **Request Throughput (req/s):** Time series graph tracking request throughput per second by endpoint handler and status code.
+6. **Request Latency Percentiles:** Time series graph tracking p95 latency (`histogram_quantile(0.95, ...)`) and p50 median latency (`histogram_quantile(0.50, ...)`).
+7. **HTTP Status Code Distribution:** Time series stacked graph visualizing `2xx`, `4xx`, and `5xx` response codes.
+8. **Python GC Activity:** Time series graph tracking garbage collection cycles across generations.
+
+### 4. Local Verification & Testing Commands
+```powershell
+# 1. Run backend unit tests including Prometheus metrics endpoint validation
+cd backend
+.\.venv\Scripts\pytest.exe -v
+
+# 2. Lint Helm chart including Prometheus & Grafana templates
+cd ..
+helm lint helm/cloudpulse
+
+# 3. Dry-run client validation for all 15 Kubernetes manifests
+helm template cloudpulse helm/cloudpulse --namespace cloudpulse | kubectl apply --dry-run=client -f -
+```
+
+### 5. Future Live Inspection Workflow (Port-Forwarding)
+> [!NOTE]
+> **Post-Deployment Access:** Because Prometheus and Grafana are intentionally not exposed to the public Internet, use `kubectl port-forward` to access their web interfaces securely through an encrypted SSH/API tunnel once deployed on a live cluster:
+
+```bash
+# 1. Access Prometheus Web UI (Targets & Graphing)
+kubectl port-forward svc/cloudpulse-prometheus 9090:9090 -n cloudpulse
+# Open http://localhost:9090/targets to verify cloudpulse-backend is UP
+
+# 2. Access Grafana Dashboard
+kubectl port-forward svc/cloudpulse-grafana 3000:3000 -n cloudpulse
+# Open http://localhost:3000 (Credentials: admin / cloudpulse-demo-admin)
+# Navigate to Dashboards -> CloudPulse -> CloudPulse Application Observability
+```
+
+---
+
+## 11. Troubleshooting Guidance
 
 1. **Docker Compose: Port 3000 or 8000 already in use:**
    - Check if another service (or local Vite / Uvicorn instance) is running on the port:

@@ -1,0 +1,25 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.prometheus.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cloudpulse.fullname" . }}-prometheus-config
+  labels:
+    {{- include "cloudpulse.prometheus.labels" . | nindent 4 }}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: {{ .Values.monitoring.prometheus.scrapeInterval | default "15s" }}
+      evaluation_interval: 15s
+
+    scrape_configs:
+      - job_name: 'cloudpulse-backend'
+        metrics_path: '/metrics'
+        scrape_interval: {{ .Values.monitoring.prometheus.scrapeInterval | default "15s" }}
+        scrape_timeout: {{ .Values.monitoring.prometheus.scrapeTimeout | default "10s" }}
+        static_configs:
+          - targets: ['{{ include "cloudpulse.fullname" . }}-backend:{{ .Values.backend.service.port }}']
+            labels:
+              app: 'cloudpulse'
+              environment: {{ .Values.global.environment | default "production" | quote }}
+              component: 'backend'
+{{- end }}
