@@ -31,13 +31,11 @@ yarn-error.log*
 !terraform.tfvars.example
 .terraform.lock.hcl
 
-# Project Planning Documents (Local Reference Only)
-PHASE1_*.md
-
 # Operating System & IDE Artifacts
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 *.log
+
 
