@@ -41,9 +41,9 @@ variable "cluster_name" {
 }
 
 variable "kubernetes_version" {
-  description = "Kubernetes control plane version for EKS (using 1.32 for optimal standard-support window)"
+  description = "Kubernetes control plane version for EKS (using 1.36 for optimal standard-support window)"
   type        = string
-  default     = "1.32"
+  default     = "1.36"
 }
 
 variable "node_instance_types" {

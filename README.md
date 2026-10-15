@@ -330,7 +330,7 @@ terraform/
 5. **IAM Security Roles:**
    - EKS Cluster Role: Attached with `AmazonEKSClusterPolicy`.
    - Worker Node Role: Attached with `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`.
-6. **Amazon EKS Control Plane:** Kubernetes `1.32` cluster with public and private endpoint access enabled.
+6. **Amazon EKS Control Plane:** Kubernetes `1.36` cluster with public and private endpoint access enabled.
 7. **EKS Managed Node Group:** Sized conservatively with `t3.small` EC2 instances (`desired = 1`, `min = 1`, `max = 2`) running Amazon Linux 2023 / EKS optimized AMI.
 
 ### Prerequisites & AWS Authentication
@@ -412,10 +412,10 @@ terraform destroy
 #### 1. EKS Control Plane Support Tiers
 AWS applies tiered pricing for Amazon EKS control planes depending on the Kubernetes version lifecycle:
 - **Standard Support Tier (~$0.10/hour, estimated ~$73.00/month):**
-  Applies to active Kubernetes versions during their first 14 months of general availability on Amazon EKS. CloudPulse is configured by default to use **Kubernetes `1.32`**, which falls within the active standard support window (standard support active through 2026/2027), incurring only the baseline rate.
+  Applies to active Kubernetes versions during their first 14 months of general availability on Amazon EKS. CloudPulse is configured by default to use **Kubernetes `1.36`**, which falls comfortably within the active standard support window (standard support active through 2027/2028), incurring only the baseline rate.
 - **Extended Support Tier (~$0.60/hour, estimated ~$438.00/month):**
   Applies when running Kubernetes versions in months 15 through 26 (after standard support ends). AWS assesses an additional $0.50/hour surcharge on top of the base $0.10/hour rate (a 6x price increase).
-  *Cost Risk Warning:* If older Kubernetes versions (such as 1.28, 1.29, 1.30, or 1.31 once it passes its standard support lifecycle) are deployed or kept running past their standard support window, the control plane charges surge dramatically from ~$73/month to ~$438/month.
+  *Cost Risk Warning:* If older Kubernetes versions (such as 1.31, 1.32, 1.33, or earlier once they pass their standard support lifecycle) are deployed or kept running past their standard support window, the control plane charges surge dramatically from ~$73/month to ~$438/month.
 
 #### 2. Worker Node Compute & Networking
 - **EC2 Worker Instances:**
@@ -436,20 +436,122 @@ AWS applies tiered pricing for Amazon EKS control planes depending on the Kubern
 #### 4. Estimated Monthly Total Summary
 | Component | Applicable Tier / Spec | Estimated Hourly Cost | Estimated Monthly Cost |
 | :--- | :--- | :--- | :--- |
-| **EKS Control Plane** | Standard Support (k8s 1.32) | ~$0.10 / hour | ~$73.00 / month |
+| **EKS Control Plane** | Standard Support (k8s 1.36) | ~$0.10 / hour | ~$73.00 / month |
 | **EC2 Worker Node (x1)** | `t3.small` (ap-south-1) | ~$0.023 / hour | ~$16.56 / month |
 | **Public IPv4 Address (x1)** | In-use public IP | ~$0.005 / hour | ~$3.60 / month |
 | **EBS Root Volume (20GB gp3)** | gp3 volume storage | — | ~$1.60 / month |
 | **NAT Gateway** | *Omitted by design* | $0.00 | $0.00 |
 | **Estimated Total Baseline** | **1 active node (Standard Tier)** | **~$0.128 / hour** | **~$94.76 / month** |
-| *High Cost Risk Scenario* | *Extended Support (k8s <=1.30/1.31)* | *~$0.628 / hour* | *~$459.76 / month* |
+| *High Cost Risk Scenario* | *Extended Support (k8s <=1.32)* | *~$0.628 / hour* | *~$459.76 / month* |
 
 > [!WARNING]
 > **Teardown Reminder:** Infrastructure should never be left running unattended. Always execute `terraform destroy` immediately after testing or evaluation to stop all billable AWS charges.
 
 ---
 
-## 9. Troubleshooting Guidance
+## 9. Kubernetes & Helm Deployment
+
+CloudPulse provides declarative Kubernetes manifests and a production-grade Helm chart located in `k8s/` and `helm/cloudpulse/` for container orchestration on Amazon EKS or local Kubernetes clusters.
+
+### Directory Structure
+```text
+k8s/
+└── namespace.yaml                     # Standalone namespace declaration for kubectl workflows
+
+helm/cloudpulse/
+├── Chart.yaml                         # Helm chart definition and metadata (k8s >= 1.30.0-0)
+├── values.yaml                        # Default deployment configuration, image tags, and resource sizing
+└── templates/
+    ├── _helpers.tpl                   # Standard template helpers, naming conventions, and common labels
+    ├── namespace.yaml                 # Conditional namespace resource (enabled via namespace.create: true)
+    ├── secret.yaml                    # Kubernetes Secret managing database credentials and connection string
+    ├── postgresql-pvc.yaml            # Optional PersistentVolumeClaim for in-cluster database persistence
+    ├── postgresql-deployment.yaml     # Single-replica PostgreSQL Deployment (Recreate strategy)
+    ├── postgresql-service.yaml        # Internal ClusterIP Service for PostgreSQL (port 5432)
+    ├── migration-job.yaml             # One-off Alembic migration Job (prevents multi-replica race conditions)
+    ├── backend-deployment.yaml        # Multi-replica FastAPI backend Deployment (non-root UID 10001)
+    ├── backend-service.yaml           # ClusterIP Service for backend (port 8000)
+    ├── frontend-deployment.yaml       # Multi-replica Nginx frontend Deployment (non-root UID 101)
+    ├── frontend-service.yaml          # ClusterIP Service for frontend (port 80 -> targetPort 8080)
+    └── ingress.yaml                   # Ingress routing /api to backend and / to frontend
+```
+
+### Kubernetes Architecture & Workloads
+1. **Dedicated Namespace (`cloudpulse`):**
+   - Declared in `k8s/namespace.yaml` for direct `kubectl` workflows.
+   - In Helm, the namespace is managed externally by default (`namespace.create: false`), allowing standard `helm install --create-namespace` or pre-existing namespace scoping. If set to `true`, Helm creates and manages the namespace lifecycle.
+2. **Frontend Workload (`cloudpulse-frontend`):**
+   - **Deployment:** Configured with **2 replicas** running the production Nginx unprivileged image (`USER 101`).
+   - **Service:** Internal `ClusterIP` exposing port `80` (targeting container port `8080`).
+   - **Probes:** Liveness and readiness HTTP GET probes on `/` (port 8080).
+   - **Security:** `runAsNonRoot: true`, `runAsUser: 101`, dropped capabilities (`ALL`).
+3. **Backend Workload (`cloudpulse-backend`):**
+   - **Deployment:** Configured with **2 replicas** running FastAPI with Uvicorn (`USER 10001`).
+   - **Service:** Internal `ClusterIP` exposing port `8000` (targeting container port `8000`).
+   - **Probes:** Liveness HTTP probe on `/health` (process responsiveness); Readiness HTTP probe on `/ready` (validates active PostgreSQL connectivity).
+   - **Security:** `runAsNonRoot: true`, `runAsUser: 10001`, dropped capabilities (`ALL`).
+4. **Ingress Routing & Path Mapping:**
+   - Evaluates `/api` with `Prefix` path matching targeting `cloudpulse-backend` on port `8000`.
+   - Evaluates `/` with `Prefix` path matching targeting `cloudpulse-frontend` on port `80`.
+   - **No Prefix Stripping:** FastAPI routes are natively mounted with `/api/resources` and `/api/incidents`. Ingress preserves the `/api` prefix without rewrite-target manipulation.
+   - Configurable Ingress class (defaults to `nginx`).
+5. **Database Connectivity & One-Off Migrations:**
+   - **Connection String:** Provided via `DATABASE_URL` stored inside Kubernetes Secret `cloudpulse-secret`.
+   - **Internal Service Isolation:** PostgreSQL is accessible strictly inside the cluster on internal ClusterIP `cloudpulse-postgresql:5432`. It is never exposed via Ingress or external LoadBalancer.
+   - **Database Migrations:** Executed via a dedicated Kubernetes `Job` (`cloudpulse-migration`) running `alembic upgrade head`. Running migrations through an independent Job prevents race conditions and lock contention that occur when multiple backend replicas attempt simultaneous schema migrations.
+   - **Secret Encryption Disclaimer:** Base64 encoding in Kubernetes Secrets is a wire/storage format in etcd, not encryption. For production workloads, integrate with AWS Secrets Manager via AWS Secrets Store CSI Driver or HashiCorp Vault.
+6. **Storage & Persistence Considerations:**
+   - In-cluster PostgreSQL defaults to `emptyDir` ephemeral storage (`persistence.enabled: false`) for local validation and lightweight testing.
+   - To enable persistent storage on Amazon EKS (`persistence.enabled: true`), the AWS EBS CSI Driver (`aws-ebs-csi-driver`) add-on and an active `StorageClass` (e.g. `gp3`) must be installed in the cluster. Without an active CSI provisioner, PVCs will remain in a `Pending` state.
+
+### Image Configuration & Tagging
+Image repositories and tags are fully configurable in `values.yaml` and reference real images produced by the CloudPulse CI/CD pipeline:
+- **Frontend Image:** `ghcr.io/srujangowda07/devops-project-frontend`
+- **Backend Image:** `ghcr.io/srujangowda07/devops-project-backend`
+- **Default Tag:** Pinned to immutable commit SHA `fd86c6f404888e7a804f8966628a4c1451ca7a9d`.
+
+To deploy a custom or locally built image tag:
+```bash
+helm upgrade --install cloudpulse ./helm/cloudpulse \
+  --namespace cloudpulse \
+  --set frontend.image.tag="<commit-sha>" \
+  --set backend.image.tag="<commit-sha>"
+```
+
+### Required CLI Tools
+- **Kubernetes CLI (`kubectl`):** v1.30+ (verified with `kubectl version --client`)
+- **Helm CLI (`helm`):** v3.12+ (verified with `helm version`)
+
+### Local Chart Validation Commands
+All templates can be completely validated locally without an active Kubernetes cluster or AWS credentials:
+
+```powershell
+# 1. Lint the Helm chart for syntax, schema, and recommended practices
+helm lint helm/cloudpulse
+
+# 2. Render all Kubernetes manifests with default values
+helm template cloudpulse helm/cloudpulse --namespace cloudpulse
+
+# 3. Perform a client-side dry-run validation using kubectl
+helm template cloudpulse helm/cloudpulse --namespace cloudpulse | kubectl apply --dry-run=client -f -
+
+# 4. Validate standalone namespace manifest
+kubectl apply --dry-run=client -f k8s/namespace.yaml
+```
+
+### Future Deployment Workflow (Cluster Prerequisite)
+> [!IMPORTANT]
+> **Pre-Deployment Gate:** The following command is a future deployment instruction and has **NOT** been executed. It requires a live Amazon EKS cluster provisioned via Terraform, authenticated `kubectl` credentials, an installed Ingress controller (e.g., `ingress-nginx` or AWS Load Balancer Controller), and explicit user approval.
+
+```bash
+# Apply once cluster is reachable and ingress controller is installed:
+kubectl apply -f k8s/namespace.yaml
+helm upgrade --install cloudpulse ./helm/cloudpulse --namespace cloudpulse
+```
+
+---
+
+## 10. Troubleshooting Guidance
 
 1. **Docker Compose: Port 3000 or 8000 already in use:**
    - Check if another service (or local Vite / Uvicorn instance) is running on the port:

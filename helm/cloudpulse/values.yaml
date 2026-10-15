@@ -1,0 +1,193 @@
+# Default values for cloudpulse Helm chart.
+# Declare variables to be passed into your templates.
+
+global:
+  environment: "production"
+
+# Namespace management
+# When false (default), Helm assumes the namespace is pre-created (e.g. via kubectl apply -f k8s/namespace.yaml or --create-namespace)
+namespace:
+  create: false
+  name: "cloudpulse"
+
+# -----------------------------------------------------------------------------
+# Frontend Service & Deployment (Nginx static bundle + reverse proxy fallback)
+# -----------------------------------------------------------------------------
+frontend:
+  replicaCount: 2
+
+  image:
+    repository: "ghcr.io/srujangowda07/devops-project-frontend"
+    tag: "fd86c6f404888e7a804f8966628a4c1451ca7a9d"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8080
+
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
+    fsGroup: 101
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop:
+        - ALL
+
+  livenessProbe:
+    httpGet:
+      path: /
+      port: 8080
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# -----------------------------------------------------------------------------
+# Backend Service & Deployment (FastAPI + SQLAlchemy + Alembic)
+# -----------------------------------------------------------------------------
+backend:
+  replicaCount: 2
+
+  image:
+    repository: "ghcr.io/srujangowda07/devops-project-backend"
+    tag: "fd86c6f404888e7a804f8966628a4c1451ca7a9d"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+
+  env:
+    appEnv: "production"
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop:
+        - ALL
+
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 15
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 8000
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# -----------------------------------------------------------------------------
+# Ingress Configuration
+# Routes /api to backend ClusterIP service and / to frontend ClusterIP service
+# -----------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations: {}
+    # Example annotations for ingress-nginx:
+    # kubernetes.io/ingress.class: nginx
+  hosts:
+    - host: ""
+      paths:
+        - path: /api
+          pathType: Prefix
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# -----------------------------------------------------------------------------
+# In-Cluster PostgreSQL Configuration
+# Dedicated internal database instance for isolated cluster deployments
+# -----------------------------------------------------------------------------
+postgresql:
+  enabled: true
+  image: "postgres:16-alpine"
+
+  auth:
+    database: "cloudpulse"
+    username: "cloudpulse"
+    # Default demo credential; override via --set postgresql.auth.password=... or secret in production
+    password: "cloudpulse"
+
+  service:
+    type: ClusterIP
+    port: 5432
+
+  # NOTE: Dynamic EBS volume provisioning on AWS EKS requires the aws-ebs-csi-driver add-on.
+  # When persistence is disabled, emptyDir is used (suitable for local validation and demos).
+  # When enabled, ensure a valid StorageClass exists in the cluster.
+  persistence:
+    enabled: false
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    size: 5Gi
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# -----------------------------------------------------------------------------
+# External Database Configuration (used if postgresql.enabled is false)
+# -----------------------------------------------------------------------------
+database:
+  host: ""
+  existingSecret: "" # Name of pre-existing secret containing DATABASE_URL key
+
+# -----------------------------------------------------------------------------
+# Database Migration Job (runs Alembic upgrade head as a single one-off task)
+# Prevents concurrent migration race conditions across multiple backend replicas
+# -----------------------------------------------------------------------------
+migration:
+  enabled: true
+  backoffLimit: 3
