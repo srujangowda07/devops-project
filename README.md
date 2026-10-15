@@ -224,39 +224,19 @@ CloudPulse includes a production-grade continuous integration, continuous delive
 The CI/CD pipeline acts as an automated quality gate, configuration validator, vulnerability scanner, and container publishing engine. The workflow graph features **8 distinct, visible stages** with explicit dependency gating, ensuring that code correctness, infrastructure validity, Helm template rendering, monitoring configuration integrity, container builds, and security scans are verified independently and transparently before container images are published to GitHub Container Registry (GHCR).
 
 ```text
-[ Git Push / Pull Request to main ]
-                 |
-                 v
-      [ Stage 1: Backend Tests ]
-      - Python 3.12 (Pinned) | Isolated SQLite DB | Pytest (14 tests)
-                 |
-                 v (needs: [backend-tests])
-      [ Stage 2: Frontend Build ]
-      - Node.js 22 (Pinned) | npm ci (lockfile reproducible) | Vite Production Build
-                 |
-                 v (needs: [frontend-build])
-      [ Stage 3: Terraform Validation ]
-      - Terraform CLI v1.9.8 | fmt -check | init -backend=false | validate (no AWS credentials)
-                 |
-                 v (needs: [terraform-validation])
-      [ Stage 4: Helm & K8s Validation ]
-      - Helm v3.16.4 & Kubectl v1.31.0 | helm lint | dry-run --validate=false | kubeconform schema checks
-                 |
-                 v (needs: [helm-k8s-validation])
-      [ Stage 5: Monitoring Configuration Validation ]
-      - Python 3.12 & PyYAML | Scrape target backend:8000 (/metrics) | Datasource URL | Dashboard JSON
-                 |
-                 v (needs: [monitoring-validation])
-      [ Stage 6: Docker Build ]
-      - Build Backend & Frontend via Buildx | Tag with commit SHA | Export image tars as workflow artifact
-                 |
-                 v (needs: [docker-build])
-      [ Stage 7: Trivy Security Scan ]
-      - Load image archives | Scan OS & library CVEs | Exit code 1 on HIGH/CRITICAL | Upload SARIF reports
-                 |
-                 v (needs: [trivy-security-scan] + Push to main branch only)
-      [ Stage 8: Publish Images to GHCR ]
-      - Isolated packages: write permission | Load verified image tars | Authenticate to GHCR | Push SHA tags
+Backend Tests ────────────────┐
+Frontend Build ───────────────┤
+Terraform Validation ─────────┤
+Helm & Kubernetes Validation ─┤── Required validations (5 jobs run in parallel)
+Monitoring Configuration ────┘          │
+                                         ▼ (needs: [backend-tests, frontend-build])
+                                    Docker Build
+                                         │
+                                         ▼ (needs: [docker-build])
+                                  Trivy Security Scan
+                                         │
+                                         ▼ (needs: all 5 validations + Docker Build + Trivy Scan)
+                                  Publish Images to GHCR (main push only)
 ```
 
 ### Triggers & Concurrency Controls
@@ -286,11 +266,10 @@ The CI/CD pipeline acts as an automated quality gate, configuration validator, v
    - **Safety Boundary:** Does not require AWS credentials and does not run `terraform plan`, `apply`, or `destroy`.
 
 4. **`helm-k8s-validation` (Helm & Kubernetes Validation):**
-   - Sets up Helm v3.16.4, Kubectl v1.31.0, and installs Kubeconform v0.6.7.
+   - Sets up Helm v3.16.4 and installs Kubeconform v0.6.7.
    - Executes `helm lint helm/cloudpulse` to detect syntax or chart packaging issues.
    - Renders templates to `/tmp/rendered-cloudpulse.yaml` with default values.
-   - Performs client-side schema validation on `k8s/namespace.yaml` and the rendered template via `kubectl apply --dry-run=client -f`.
-   - Runs strict schema validation against Kubernetes OpenAPI schemas via `kubeconform -strict -summary`.
+   - Runs strict offline schema validation against official Kubernetes schemas via `kubeconform -strict -summary` on both `k8s/namespace.yaml` and the rendered Helm templates (eliminating live API server discovery dependencies).
    - Runs automated Python assertions validating key architectural requirements: 2 replicas each for frontend and backend Deployments, ClusterIP Services, Ingress routing (`/` to frontend, `/api` to backend), PostgreSQL resources, migration Job, and configurable image tag overrides (`--set backend.image.tag=...`).
 
 5. **`monitoring-validation` (Monitoring Configuration Validation):**
@@ -359,10 +338,10 @@ terraform init -backend=false
 terraform validate
 cd ..
 
-# 4. Helm Lint & Kubectl Schema Dry-Run Validation
+# 4. Helm Lint & Kubeconform Schema Validation
 helm lint helm/cloudpulse
-helm template cloudpulse helm/cloudpulse --namespace cloudpulse | kubectl apply --dry-run=client -f -
-kubectl apply --dry-run=client -f k8s/namespace.yaml
+kubeconform -strict -summary k8s/namespace.yaml
+helm template cloudpulse helm/cloudpulse | kubeconform -strict -summary
 
 # 5. Monitoring Configuration Validation (Python)
 python -c "
@@ -786,7 +765,7 @@ docker compose up -d
    * `backend-tests`: Pinned Python 3.12 with complete pytest suite.
    * `frontend-build`: Pinned Node.js 22 with `npm ci` and Vite production build.
    * `terraform-validation`: Pinned Terraform v1.9.8 running `fmt`, `init -backend=false`, and `validate`.
-   * `helm-k8s-validation`: Helm chart linting, client dry-run, kubeconform schema validation, and architectural assertions.
+   * `helm-k8s-validation`: Helm chart linting, strict offline kubeconform schema validation, and architectural assertions.
    * `monitoring-validation`: Prometheus scrape targets, Grafana datasource URL, and dashboard JSON validation.
    * `docker-build`: Multi-stage Docker builds tagged with commit SHA and exported as workflow artifacts.
    * `trivy-security-scan`: Scans backend and frontend image artifacts for HIGH/CRITICAL vulnerabilities.

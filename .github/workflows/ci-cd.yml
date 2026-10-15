@@ -23,7 +23,6 @@ env:
   NODE_VERSION: '22'
   TERRAFORM_VERSION: '1.9.8'
   HELM_VERSION: 'v3.16.4'
-  KUBECTL_VERSION: 'v1.31.0'
   KUBECONFORM_VERSION: 'v0.6.7'
 
 jobs:
@@ -60,7 +59,6 @@ jobs:
   # ===========================================================================
   frontend-build:
     name: Frontend Build
-    needs: [backend-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -87,7 +85,6 @@ jobs:
   # ===========================================================================
   terraform-validation:
     name: Terraform Validation
-    needs: [frontend-build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -116,7 +113,6 @@ jobs:
   # ===========================================================================
   helm-k8s-validation:
     name: Helm & Kubernetes Validation
-    needs: [terraform-validation]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -136,11 +132,6 @@ jobs:
         with:
           version: ${{ env.HELM_VERSION }}
 
-      - name: Set up Kubectl ${{ env.KUBECTL_VERSION }}
-        uses: azure/setup-kubectl@v4
-        with:
-          version: ${{ env.KUBECTL_VERSION }}
-
       - name: Install Kubeconform ${{ env.KUBECONFORM_VERSION }}
         run: |
           curl -sL https://github.com/yannh/kubeconform/releases/download/${{ env.KUBECONFORM_VERSION }}/kubeconform-linux-amd64.tar.gz | sudo tar -xz -C /usr/local/bin kubeconform
@@ -152,16 +143,11 @@ jobs:
       - name: Render Helm Template to Manifest
         run: helm template cloudpulse helm/cloudpulse > /tmp/rendered-cloudpulse.yaml
 
-      - name: Validate Standalone Namespace Manifest (Kubectl Client Dry-Run)
-        run: kubectl apply --dry-run=client --validate=false -f k8s/namespace.yaml
+      - name: Validate Standalone Namespace Manifest with Kubeconform
+        run: kubeconform -strict -summary k8s/namespace.yaml
 
-      - name: Validate Rendered Manifests (Kubectl Client Dry-Run)
-        run: kubectl apply --dry-run=client --validate=false -f /tmp/rendered-cloudpulse.yaml
-
-      - name: Schema Validation with Kubeconform
-        run: |
-          kubeconform -strict -summary k8s/namespace.yaml
-          kubeconform -strict -summary /tmp/rendered-cloudpulse.yaml
+      - name: Validate Rendered Helm Manifests with Kubeconform
+        run: kubeconform -strict -summary /tmp/rendered-cloudpulse.yaml
 
       - name: Verify Architecture & Resource Assertions
         run: |
@@ -214,7 +200,6 @@ jobs:
   # ===========================================================================
   monitoring-validation:
     name: Monitoring Configuration Validation
-    needs: [helm-k8s-validation]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -296,7 +281,7 @@ jobs:
   # ===========================================================================
   docker-build:
     name: Docker Build
-    needs: [monitoring-validation]
+    needs: [backend-tests, frontend-build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -429,7 +414,14 @@ jobs:
   # ===========================================================================
   publish-ghcr:
     name: Publish Images to GHCR
-    needs: [trivy-security-scan]
+    needs:
+      - backend-tests
+      - frontend-build
+      - terraform-validation
+      - helm-k8s-validation
+      - monitoring-validation
+      - docker-build
+      - trivy-security-scan
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
