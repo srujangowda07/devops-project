@@ -4,7 +4,8 @@
 
 # Documentation and planning artifacts
 *.md
-
+scratch/
+session21-python/
 
 # Local Python caches and virtual environments
 __pycache__/
@@ -23,6 +24,7 @@ npm-debug.log*
 .env.*
 *.pem
 *.key
+*.log
 
 # Terraform local state and cache
 .terraform/
