@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/instance: cloudpulse
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: cloudpulse
+    app.kubernetes.io/version: 1.0.0
+    helm.sh/chart: cloudpulse-0.1.0
+  name: cloudpulse-frontend
+  namespace: cloudpulse
+spec:
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/instance: cloudpulse
+    app.kubernetes.io/name: cloudpulse
+  type: ClusterIP

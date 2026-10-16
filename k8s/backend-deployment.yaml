@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/instance: cloudpulse
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: cloudpulse
+    app.kubernetes.io/version: 1.0.0
+    helm.sh/chart: cloudpulse-0.1.0
+  name: cloudpulse-backend
+  namespace: cloudpulse
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: backend
+      app.kubernetes.io/instance: cloudpulse
+      app.kubernetes.io/name: cloudpulse
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: backend
+        app.kubernetes.io/instance: cloudpulse
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: cloudpulse
+        app.kubernetes.io/version: 1.0.0
+        helm.sh/chart: cloudpulse-0.1.0
+    spec:
+      containers:
+      - env:
+        - name: APP_ENV
+          value: production
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              key: DATABASE_URL
+              name: cloudpulse-secret
+        image: ghcr.io/srujangowda07/devops-project-backend:fd86c6f404888e7a804f8966628a4c1451ca7a9d
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 15
+          timeoutSeconds: 5
+        name: backend
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /ready
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        runAsUser: 10001

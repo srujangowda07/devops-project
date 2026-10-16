@@ -579,4 +579,4 @@ All live AWS infrastructure provisioned during testing has been **cleanly destro
 For the complete technical breakdown, database schemas, verified terminal evidence, and executive slide deck:
 
 - 📄 **[Detailed Technical Project Report](docs/PROJECT_REPORT.md)** — Architectural designs, schema models, CI/CD specifications, and complete verification gallery.
-- 📊 **[Executive Presentation Slide Deck](docs/CloudPulse_Presentation.pptx)** — Capstone presentation slides summarizing project architecture, engineering lifecycle, and operational outcomes.
+- 📊 **[Executive Presentation Slide Deck](demo/CloudPulse_Presentation.pdf)** — Capstone presentation slides summarizing project architecture, engineering lifecycle, and operational outcomes.

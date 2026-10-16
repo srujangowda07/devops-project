@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: postgresql
+    app.kubernetes.io/instance: cloudpulse
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: cloudpulse
+    app.kubernetes.io/version: 1.0.0
+    helm.sh/chart: cloudpulse-0.1.0
+  name: cloudpulse-postgresql
+  namespace: cloudpulse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: postgresql
+      app.kubernetes.io/instance: cloudpulse
+      app.kubernetes.io/name: cloudpulse
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: postgresql
+        app.kubernetes.io/instance: cloudpulse
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: cloudpulse
+        app.kubernetes.io/version: 1.0.0
+        helm.sh/chart: cloudpulse-0.1.0
+    spec:
+      containers:
+      - env:
+        - name: POSTGRES_DB
+          value: cloudpulse
+        - name: POSTGRES_USER
+          value: cloudpulse
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: POSTGRES_PASSWORD
+              name: cloudpulse-secret
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        image: postgres:16-alpine
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - exec pg_isready -U cloudpulse -d cloudpulse
+          failureThreshold: 6
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+        name: postgresql
+        ports:
+        - containerPort: 5432
+          name: postgresql
+          protocol: TCP
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - exec pg_isready -U cloudpulse -d cloudpulse
+          failureThreshold: 3
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - mountPath: /var/lib/postgresql/data
+          name: postgresql-data
+      securityContext:
+        fsGroup: 70
+      volumes:
+      - emptyDir: {}
+        name: postgresql-data

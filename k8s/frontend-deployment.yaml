@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/instance: cloudpulse
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: cloudpulse
+    app.kubernetes.io/version: 1.0.0
+    helm.sh/chart: cloudpulse-0.1.0
+  name: cloudpulse-frontend
+  namespace: cloudpulse
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: frontend
+      app.kubernetes.io/instance: cloudpulse
+      app.kubernetes.io/name: cloudpulse
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: frontend
+        app.kubernetes.io/instance: cloudpulse
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: cloudpulse
+        app.kubernetes.io/version: 1.0.0
+        helm.sh/chart: cloudpulse-0.1.0
+    spec:
+      containers:
+      - image: ghcr.io/srujangowda07/devops-project-frontend:fd86c6f404888e7a804f8966628a4c1451ca7a9d
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 15
+          timeoutSeconds: 3
+        name: frontend
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+      securityContext:
+        fsGroup: 101
+        runAsGroup: 101
+        runAsNonRoot: true
+        runAsUser: 101
