@@ -4,6 +4,9 @@
 
 Built with React, FastAPI, and PostgreSQL, it demonstrates end-to-end DevOps engineering practices through multi-stage Docker containerization, an automated GitHub Actions CI/CD pipeline, Trivy vulnerability scanning, Terraform-based AWS infrastructure, Kubernetes deployments using Helm, and full-stack observability with Prometheus and Grafana.
 
+> 📊 **Capstone Presentation Slides:** [Google Drive Presentation](https://drive.google.com/drive/folders/1LpgaK-tKf4W-0Yjo_AS64PWBS2_2sFBC?usp=sharing)  
+> 📄 **Technical Architecture Report:** [`docs/PROJECT_REPORT.md`](docs/PROJECT_REPORT.md)
+
 ---
 
 ## 1. Technology Stack Summary
@@ -497,7 +500,7 @@ terraform validate
 ```
 
 > [!WARNING]
-> **Cloud Cost Reminder:** Running `terraform apply` provisions live AWS resources that incur billable hourly charges. Always run `terraform destroy` when evaluation is complete.
+> **Cloud Cost Reminder:** Running `terraform apply` provisions live AWS resources that incur billable hourly charges. So ran `terraform destroy` when evaluation is complete its may not be live.
 
 ---
 
