@@ -6,6 +6,7 @@ Built with React, FastAPI, and PostgreSQL, it demonstrates end-to-end DevOps eng
 
 > 📊 **Capstone Presentation Slides:** [`demo/CloudPulse_Presentation.pdf`](demo/CloudPulse_Presentation.pdf)  
 > 🎥 **Walkthrough Video Demo:** [`demo/CloudPulse_Recording.mp4`](demo/CloudPulse_Recording.mp4)  
+> 📁 **Google Drive Artifacts Folder:** [Drive Folder (Slides & Recording)](https://drive.google.com/drive/folders/1LpgaK-tKf4W-0Yjo_AS64PWBS2_2sFBC?usp=drive_link)  
 > 📄 **Technical Architecture Report:** [`docs/PROJECT_REPORT.md`](docs/PROJECT_REPORT.md)
 
 ---
