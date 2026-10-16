@@ -4,7 +4,8 @@
 
 Built with React, FastAPI, and PostgreSQL, it demonstrates end-to-end DevOps engineering practices through multi-stage Docker containerization, an automated GitHub Actions CI/CD pipeline, Trivy vulnerability scanning, Terraform-based AWS infrastructure, Kubernetes deployments using Helm, and full-stack observability with Prometheus and Grafana.
 
-> 📊 **Capstone Presentation Slides:** [Google Drive Presentation](https://drive.google.com/drive/folders/1LpgaK-tKf4W-0Yjo_AS64PWBS2_2sFBC?usp=sharing)  
+> 📊 **Capstone Presentation Slides:** [`demo/CloudPulse_Presentation.pdf`](demo/CloudPulse_Presentation.pdf)  
+> 🎥 **Walkthrough Video Demo:** [`demo/CloudPulse_Recording.mp4`](demo/CloudPulse_Recording.mp4)  
 > 📄 **Technical Architecture Report:** [`docs/PROJECT_REPORT.md`](docs/PROJECT_REPORT.md)
 
 ---
